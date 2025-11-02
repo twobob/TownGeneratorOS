@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Medieval Fantasy City Generator</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #f3ede2;
+      font-family: sans-serif;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+    }
+    canvas {
+      display: block;
+    }
+    .loading-message {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #4a3d2c;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="loading-message">Loading city generator…</div>
+  </div>
+  <script src="src/towngenerator.js"></script>
+  <script>
+    (function () {
+      function start() {
+        var container = document.getElementById('app');
+        if (!container) {
+          throw new Error('Missing #app container for Town Generator');
+        }
+
+        var background = 0xF3EDE2;
+        var width = window.innerWidth;
+        var height = window.innerHeight;
+
+        var app = new openfl_display_Application();
+        var attributes = {
+          allowHighDPI: true,
+          alwaysOnTop: false,
+          borderless: false,
+          element: container,
+          frameRate: 60,
+          height: height,
+          hidden: false,
+          maximized: false,
+          minimized: false,
+          parameters: {},
+          resizable: true,
+          title: 'Medieval Fantasy City Generator',
+          width: width,
+          x: 0,
+          y: 0
+        };
+
+        attributes.context = {
+          antialiasing: 0,
+          background: background,
+          colorDepth: 0,
+          depth: false,
+          hardware: false,
+          stencil: false,
+          type: null,
+          vsync: true
+        };
+
+        app.createWindow(attributes);
+
+        var stage = app.window.stage;
+        stage.window.onResize.add(function (w, h) {
+          stage.__setLogicalSize(w, h);
+        });
+
+        container.querySelector('.loading-message')?.remove();
+
+        com_watabou_towngenerator_Main.main();
+        app.exec();
+
+        window.addEventListener('resize', function () {
+          app.window.resize(window.innerWidth, window.innerHeight);
+        });
+      }
+
+      if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        start();
+      } else {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+      }
+    })();
+  </script>
+</body>
+</html>
