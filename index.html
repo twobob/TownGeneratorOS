@@ -49,7 +49,7 @@
         var width = window.innerWidth;
         var height = window.innerHeight;
 
-        var app = new openfl_display_Application();
+        var app = new openfl.display.Application();
         var attributes = {
           allowHighDPI: true,
           alwaysOnTop: false,
@@ -82,9 +82,11 @@
         app.createWindow(attributes);
 
         var stage = app.window.stage;
-        stage.window.onResize.add(function (w, h) {
-          stage.__setLogicalSize(w, h);
-        });
+        if (stage != null && stage.window != null) {
+          stage.window.onResize.add(function (w, h) {
+            stage.__setLogicalSize(w, h);
+          });
+        }
 
         container.querySelector('.loading-message')?.remove();
 
