@@ -16,6 +16,53 @@
     #app {
       width: 100%;
       height: 100%;
+      position: relative;
+    }
+    .controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 100;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 15px;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      font-family: sans-serif;
+    }
+    .controls h3 {
+      margin: 0 0 10px 0;
+      font-size: 0.9rem;
+      color: #4a3d2c;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .controls label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.85rem;
+      color: #4a3d2c;
+    }
+    .controls input[type="range"] {
+      width: 200px;
+      margin: 5px 0;
+    }
+    .controls button {
+      background: #4a3d2c;
+      color: #f3ede2;
+      border: none;
+      padding: 8px 16px;
+      margin: 8px 4px 0 0;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .controls button:hover {
+      background: #5d4d38;
+    }
+    .controls button:active {
+      background: #2b2416;
     }
     canvas {
       display: block;
@@ -36,7 +83,7 @@
   <div id="app">
     <div class="loading-message">Loading city generator…</div>
   </div>
-  <script src="src/towngenerator.js"></script>
+  <script src="src/towngenerator_new.js"></script>
   <script>
     (function () {
       function start() {
@@ -45,54 +92,227 @@
           throw new Error('Missing #app container for Town Generator');
         }
 
-        var background = 0xF3EDE2;
-        var width = window.innerWidth;
-        var height = window.innerHeight;
+        container.querySelector('.loading-message').remove();
 
-        var app = new openfl_display_Application();
-        var attributes = {
-          allowHighDPI: true,
-          alwaysOnTop: false,
-          borderless: false,
-          element: container,
-          frameRate: 60,
-          height: height,
-          hidden: false,
-          maximized: false,
-          minimized: false,
-          parameters: {},
-          resizable: true,
-          title: 'Medieval Fantasy City Generator',
-          width: width,
-          x: 0,
-          y: 0
-        };
+        // Pull URL parameters first
+        StateManager.pullParams();
 
-        attributes.context = {
-          antialiasing: 0,
-          background: background,
-          colorDepth: 0,
-          depth: false,
-          hardware: false,
-          stencil: false,
-          type: null,
-          vsync: true
-        };
+        var generator = new TownGenerator();
+        generator.init(container);
 
-        app.createWindow(attributes);
+        var controls = document.createElement('div');
+        controls.className = 'controls';
+        controls.innerHTML = '<h3>City Generator</h3>' +
+          '<label>Size: <span id="size-value">' + StateManager.size + '</span><br>' +
+          '<input type="range" id="size-slider" min="6" max="40" value="' + StateManager.size + '"></label>' +
+          '<label>Seed: <input type="number" id="seed-input" style="width: 120px; padding: 4px;" value="' + (StateManager.seed > 0 ? StateManager.seed : '') + '"></label>' +
+          '<label><input type="checkbox" id="plaza-check" checked> Plaza</label>' +
+          '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
+          '<label><input type="checkbox" id="walls-check" checked> Walls</label>' +
+          '<label><input type="checkbox" id="labels-check"> Show Labels</label>' +
+          '<label><input type="checkbox" id="cell-outlines-check"> Show Cell Outlines</label>' +
+          '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
+          '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
+          '<label>Grid Chaos: <span id="grid-chaos-value">0.4</span><br>' +
+          '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.4"></label>' +
+          '<label>Size Chaos: <span id="size-chaos-value">0.6</span><br>' +
+          '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.6"></label>' +
+          '<label>Alley Width: <span id="alley-width-value">0.6</span><br>' +
+          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="0.6"></label>' +
+          '<label>Street Width: <span id="street-width-value">4.0</span><br>' +
+          '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="4.0"></label>' +
+          '<label>Building Gap: <span id="building-gap-value">1.8</span><br>' +
+          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="1.8"></label>' +
+          '<label>Wall Thickness: <span id="wall-thickness-value">5</span><br>' +
+          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="5"></label>' +
+          '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
+          '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
+          '<div><button id="regenerate-btn">New Random</button>' +
+          '<button id="apply-btn">Apply Settings</button>' +
+          '<button id="export-btn">Export PNG</button></div>';
+        container.appendChild(controls);
 
-        var stage = app.window.stage;
-        stage.window.onResize.add(function (w, h) {
-          stage.__setLogicalSize(w, h);
+        var sizeSlider = document.getElementById('size-slider');
+        var sizeValue = document.getElementById('size-value');
+        var seedInput = document.getElementById('seed-input');
+        var gridChaos = document.getElementById('grid-chaos');
+        var gridChaosValue = document.getElementById('grid-chaos-value');
+        var sizeChaos = document.getElementById('size-chaos');
+        var sizeChaosValue = document.getElementById('size-chaos-value');
+        var alleyWidth = document.getElementById('alley-width');
+        var alleyWidthValue = document.getElementById('alley-width-value');
+        var streetWidth = document.getElementById('street-width');
+        var streetWidthValue = document.getElementById('street-width-value');
+        var buildingGap = document.getElementById('building-gap');
+        var buildingGapValue = document.getElementById('building-gap-value');
+        var wallThickness = document.getElementById('wall-thickness');
+        var wallThicknessValue = document.getElementById('wall-thickness-value');
+        var zoomSlider = document.getElementById('zoom-slider');
+        var zoomValue = document.getElementById('zoom-value');
+
+        seedInput.value = StateManager.seed;
+
+        // Update display values on input
+        sizeSlider.addEventListener('input', function() {
+          sizeValue.textContent = sizeSlider.value;
+        });
+        
+        gridChaos.addEventListener('input', function() {
+          gridChaosValue.textContent = gridChaos.value;
+        });
+        
+        sizeChaos.addEventListener('input', function() {
+          sizeChaosValue.textContent = sizeChaos.value;
+        });
+        
+        alleyWidth.addEventListener('input', function() {
+          alleyWidthValue.textContent = alleyWidth.value;
+        });
+        
+        streetWidth.addEventListener('input', function() {
+          streetWidthValue.textContent = streetWidth.value;
+        });
+        
+        buildingGap.addEventListener('input', function() {
+          buildingGapValue.textContent = buildingGap.value;
+        });
+        
+        wallThickness.addEventListener('input', function() {
+          wallThicknessValue.textContent = wallThickness.value;
+        });
+        
+        zoomSlider.addEventListener('input', function() {
+          zoomValue.textContent = parseFloat(zoomSlider.value).toFixed(1);
+        });
+        
+        // Auto-apply on change (when released)
+        sizeSlider.addEventListener('change', function() {
+          StateManager.size = parseInt(sizeSlider.value);
+          generator.generate();
+        });
+        
+        gridChaos.addEventListener('change', function() {
+          StateManager.gridChaos = parseFloat(gridChaos.value);
+          generator.generate();
+        });
+        
+        sizeChaos.addEventListener('change', function() {
+          StateManager.sizeChaos = parseFloat(sizeChaos.value);
+          generator.generate();
+        });
+        
+        alleyWidth.addEventListener('change', function() {
+          StateManager.alleyWidth = parseFloat(alleyWidth.value);
+          generator.generate();
+        });
+        
+        streetWidth.addEventListener('change', function() {
+          StateManager.streetWidth = parseFloat(streetWidth.value);
+          generator.render();
+        });
+        
+        buildingGap.addEventListener('change', function() {
+          StateManager.buildingGap = parseFloat(buildingGap.value);
+          generator.generate();
+        });
+        
+        wallThickness.addEventListener('change', function() {
+          StateManager.wallThickness = parseFloat(wallThickness.value);
+          generator.render();
+        });
+        
+        zoomSlider.addEventListener('change', function() {
+          StateManager.zoom = parseFloat(zoomSlider.value);
+          generator.render();
+        });
+        
+        seedInput.addEventListener('change', function() {
+          var newSeed = parseInt(seedInput.value);
+          if (!isNaN(newSeed) && newSeed > 0) {
+            StateManager.seed = newSeed;
+            generator.generate();
+          }
+        });
+        
+        document.getElementById('plaza-check').addEventListener('change', function() {
+          StateManager.plazaNeeded = this.checked;
+          generator.generate();
+        });
+        
+        document.getElementById('citadel-check').addEventListener('change', function() {
+          StateManager.citadelNeeded = this.checked;
+          generator.generate();
+        });
+        
+        document.getElementById('walls-check').addEventListener('change', function() {
+          StateManager.wallsNeeded = this.checked;
+          generator.generate();
+        });
+        
+        document.getElementById('labels-check').addEventListener('change', function() {
+          StateManager.showLabels = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('cell-outlines-check').addEventListener('change', function() {
+          StateManager.showCellOutlines = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('buildings-check').addEventListener('change', function() {
+          StateManager.showBuildings = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('streets-check').addEventListener('change', function() {
+          StateManager.showStreets = this.checked;
+          generator.render();
         });
 
-        container.querySelector('.loading-message')?.remove();
+        document.getElementById('regenerate-btn').addEventListener('click', function() {
+          console.log('Regenerate button clicked');
+          StateManager.seed = -1;
+          StateManager.size = parseInt(sizeSlider.value);
+          StateManager.plazaNeeded = document.getElementById('plaza-check').checked;
+          StateManager.citadelNeeded = document.getElementById('citadel-check').checked;
+          StateManager.wallsNeeded = document.getElementById('walls-check').checked;
+          StateManager.showLabels = document.getElementById('labels-check').checked;
+          StateManager.gridChaos = parseFloat(gridChaos.value);
+          StateManager.sizeChaos = parseFloat(sizeChaos.value);
+          StateManager.alleyWidth = parseFloat(alleyWidth.value);
+          StateManager.streetWidth = parseFloat(streetWidth.value);
+          StateManager.buildingGap = parseFloat(buildingGap.value);
+          StateManager.wallThickness = parseFloat(wallThickness.value);
+          generator.generate();
+          seedInput.value = StateManager.seed;
+        });
 
-        com_watabou_towngenerator_Main.main();
-        app.exec();
+        document.getElementById('apply-btn').addEventListener('click', function() {
+          console.log('Apply button clicked');
+          StateManager.size = parseInt(sizeSlider.value);
+          StateManager.plazaNeeded = document.getElementById('plaza-check').checked;
+          StateManager.citadelNeeded = document.getElementById('citadel-check').checked;
+          StateManager.wallsNeeded = document.getElementById('walls-check').checked;
+          StateManager.showLabels = document.getElementById('labels-check').checked;
+          StateManager.gridChaos = parseFloat(gridChaos.value);
+          StateManager.sizeChaos = parseFloat(sizeChaos.value);
+          StateManager.alleyWidth = parseFloat(alleyWidth.value);
+          StateManager.streetWidth = parseFloat(streetWidth.value);
+          StateManager.buildingGap = parseFloat(buildingGap.value);
+          StateManager.wallThickness = parseFloat(wallThickness.value);
+          var newSeed = parseInt(seedInput.value);
+          if (!isNaN(newSeed) && newSeed > 0) {
+            StateManager.seed = newSeed;
+          }
+          generator.generate();
+        });
 
-        window.addEventListener('resize', function () {
-          app.window.resize(window.innerWidth, window.innerHeight);
+        document.getElementById('export-btn').addEventListener('click', function() {
+          var canvas = generator.canvas;
+          var link = document.createElement('a');
+          link.download = 'city-' + StateManager.seed + '.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
         });
       }
 

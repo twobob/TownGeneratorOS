@@ -2,3 +2,6 @@
 *.iml
 /Export
 /.idea
+/test.html
+/test.js
+reference*
