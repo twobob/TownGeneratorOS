@@ -92,8 +92,25 @@
       font-size: 0.85rem;
       color: #4a3d2c;
     }
+    .checkbox-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .checkbox-grid label {
+      margin-bottom: 0;
+    }
+    .slider-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .slider-grid label {
+      margin-bottom: 0;
+    }
     .controls input[type="range"] {
-      width: 200px;
+      width: 100%;
       margin: 5px 0;
     }
     .controls button {
@@ -154,9 +171,12 @@
         controls.className = 'controls';
         controls.innerHTML = '<h3>City Generator</h3>' +
           '<button class="controls-toggle" id="toggle-controls">◀</button>' +
+          '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
+          '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
           '<label>Size: <span id="size-value">' + StateManager.size + '</span><br>' +
           '<input type="range" id="size-slider" min="6" max="40" value="' + StateManager.size + '"></label>' +
           '<label>Seed: <input type="number" id="seed-input" style="width: 120px; padding: 4px;" value="' + (StateManager.seed > 0 ? StateManager.seed : '') + '"></label>' +
+          '<div class="checkbox-grid">' +
           '<label><input type="checkbox" id="plaza-check" checked> Plaza</label>' +
           '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
           '<label><input type="checkbox" id="walls-check" checked> Walls</label>' +
@@ -164,6 +184,8 @@
           '<label><input type="checkbox" id="cell-outlines-check"> Show Cell Outlines</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
+          '</div>' +
+          '<div class="slider-grid">' +
           '<label>Grid Chaos: <span id="grid-chaos-value">0.4</span><br>' +
           '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.4"></label>' +
           '<label>Size Chaos: <span id="size-chaos-value">0.6</span><br>' +
@@ -178,10 +200,9 @@
           '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="1.8"></label>' +
           '<label>Wall Thickness: <span id="wall-thickness-value">5</span><br>' +
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="5"></label>' +
-          '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
-          '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">30%</span><br>' +
           '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.3"></label>' +
+          '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
           '<button id="export-btn">Export PNG</button></div>';

@@ -835,10 +835,16 @@ class CityModel {
     
     let voronoi = Voronoi.build(points);
     
-    const toRelax = [voronoi.points[0], voronoi.points[1], voronoi.points[2], voronoi.points[this.nPatches]];
-    voronoi = Voronoi.relax(voronoi, toRelax);
-    voronoi = Voronoi.relax(voronoi, toRelax);
-    voronoi = Voronoi.relax(voronoi, toRelax);
+    const relaxIndices = [0, 1, 2, this.nPatches];
+    
+    for (let i = 0; i < 3; i++) {
+      const toRelax = Array.from(new Set(relaxIndices
+        .map(index => voronoi.points[index])
+        .filter(point => point != null)
+      ));
+
+      voronoi = Voronoi.relax(voronoi, toRelax);
+    }
     
     voronoi.points.sort((p1, p2) => MathUtils.sign(p1.length - p2.length));
     
