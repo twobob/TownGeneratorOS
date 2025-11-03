@@ -1016,28 +1016,64 @@ class CityModel {
       }
     }
     
-    // Add exterior roads from gates
+    // Add exterior roads from gates - avoid farm patches
     this.exteriorRoads = [];
     for (const gate of this.gates) {
       // Calculate direction away from city center
       const angle = Math.atan2(gate.y, gate.x);
       const roadLength = this.cityRadius * 1.5;
       
-      // Create slightly wiggly road
+      // Find farm patches along this direction to avoid
+      const farmPatches = this.patches.filter(p => p.ward instanceof Farm);
+      
+      // Create slightly wiggly road that avoids farms
       const road = [gate];
-      const segments = 5;
+      const segments = 10; // More segments for better farm avoidance
+      let currentPoint = gate;
+      
       for (let i = 1; i <= segments; i++) {
         const t = i / segments;
-        const dist = roadLength * t;
-        const wiggle = (Random.float() - 0.5) * 10;
-        const perpAngle = angle + Math.PI / 2;
+        const baseDist = roadLength * t;
         
-        const point = new Point(
-          gate.x + Math.cos(angle) * dist + Math.cos(perpAngle) * wiggle,
-          gate.y + Math.sin(angle) * dist + Math.sin(perpAngle) * wiggle
-        );
-        road.push(point);
+        // Base direction
+        let targetX = gate.x + Math.cos(angle) * baseDist;
+        let targetY = gate.y + Math.sin(angle) * baseDist;
+        
+        // Check if target is inside any farm patch
+        const targetPoint = new Point(targetX, targetY);
+        let insideFarm = false;
+        
+        for (const farmPatch of farmPatches) {
+          if (this.isPointInPolygon(targetPoint, farmPatch.shape)) {
+            insideFarm = true;
+            
+            // Push road to edge of farm
+            const farmCenter = farmPatch.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+            farmCenter.x /= farmPatch.shape.length;
+            farmCenter.y /= farmPatch.shape.length;
+            
+            // Direction away from farm center
+            const awayAngle = Math.atan2(targetY - farmCenter.y, targetX - farmCenter.x);
+            const pushDist = 15; // Push road 15 units away from farm
+            
+            targetX += Math.cos(awayAngle) * pushDist;
+            targetY += Math.sin(awayAngle) * pushDist;
+            break;
+          }
+        }
+        
+        // Add small wiggle if not avoiding farms
+        if (!insideFarm && i > 1) {
+          const wiggle = (Random.float() - 0.5) * 8;
+          const perpAngle = angle + Math.PI / 2;
+          targetX += Math.cos(perpAngle) * wiggle;
+          targetY += Math.sin(perpAngle) * wiggle;
+        }
+        
+        currentPoint = new Point(targetX, targetY);
+        road.push(currentPoint);
       }
+      
       this.exteriorRoads.push(road);
     }
   }
