@@ -1016,65 +1016,92 @@ class CityModel {
       }
     }
     
-    // Add exterior roads from gates - avoid farm patches
+    // Add exterior roads from gates
     this.exteriorRoads = [];
+    
+    // Get all exterior patches
+    const exteriorPatches = this.patches.filter(p => p.ward && !p.withinCity);
+    
+    // Build extended topology that includes exterior vertices
+    const extendedGraph = new Map(topology);
+    
+    // Add all exterior patch edges to the graph
+    for (const patch of exteriorPatches) {
+      for (let i = 0; i < patch.shape.length; i++) {
+        const v0 = patch.shape[i];
+        const v1 = patch.shape[(i + 1) % patch.shape.length];
+        
+        if (!extendedGraph.has(v0)) extendedGraph.set(v0, {edges: new Map()});
+        if (!extendedGraph.has(v1)) extendedGraph.set(v1, {edges: new Map()});
+        
+        const dist = Point.distance(v0, v1);
+        extendedGraph.get(v0).edges.set(v1, dist);
+        extendedGraph.get(v1).edges.set(v0, dist);
+      }
+    }
+    
+    // For each gate, pathfind outward to a far point
     for (const gate of this.gates) {
-      // Calculate direction away from city center
       const angle = Math.atan2(gate.y, gate.x);
       const roadLength = this.cityRadius * 1.5;
       
-      // Find farm patches along this direction to avoid
-      const farmPatches = this.patches.filter(p => p.ward instanceof Farm);
+      // Find the farthest vertex in the extended graph along this direction
+      let bestTarget = null;
+      let maxDist = 0;
       
-      // Create slightly wiggly road that avoids farms
-      const road = [gate];
-      const segments = 10; // More segments for better farm avoidance
-      let currentPoint = gate;
-      
-      for (let i = 1; i <= segments; i++) {
-        const t = i / segments;
-        const baseDist = roadLength * t;
+      for (const vertex of extendedGraph.keys()) {
+        // Check if vertex is roughly in the gate's direction
+        const dx = vertex.x - gate.x;
+        const dy = vertex.y - gate.y;
+        const vertexAngle = Math.atan2(dy, dx);
+        const angleDiff = Math.abs(vertexAngle - angle);
         
-        // Base direction
-        let targetX = gate.x + Math.cos(angle) * baseDist;
-        let targetY = gate.y + Math.sin(angle) * baseDist;
-        
-        // Check if target is inside any farm patch
-        const targetPoint = new Point(targetX, targetY);
-        let insideFarm = false;
-        
-        for (const farmPatch of farmPatches) {
-          if (this.isPointInPolygon(targetPoint, farmPatch.shape)) {
-            insideFarm = true;
-            
-            // Push road to edge of farm
-            const farmCenter = farmPatch.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-            farmCenter.x /= farmPatch.shape.length;
-            farmCenter.y /= farmPatch.shape.length;
-            
-            // Direction away from farm center
-            const awayAngle = Math.atan2(targetY - farmCenter.y, targetX - farmCenter.x);
-            const pushDist = 15; // Push road 15 units away from farm
-            
-            targetX += Math.cos(awayAngle) * pushDist;
-            targetY += Math.sin(awayAngle) * pushDist;
-            break;
+        // Within 45 degrees of the gate direction
+        if (angleDiff < Math.PI / 4 || angleDiff > (2 * Math.PI - Math.PI / 4)) {
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > maxDist) {
+            maxDist = dist;
+            bestTarget = vertex;
           }
         }
-        
-        // Add small wiggle if not avoiding farms
-        if (!insideFarm && i > 1) {
-          const wiggle = (Random.float() - 0.5) * 8;
-          const perpAngle = angle + Math.PI / 2;
-          targetX += Math.cos(perpAngle) * wiggle;
-          targetY += Math.sin(perpAngle) * wiggle;
-        }
-        
-        currentPoint = new Point(targetX, targetY);
-        road.push(currentPoint);
       }
       
-      this.exteriorRoads.push(road);
+      if (!bestTarget) {
+        // Fallback: just use the farthest vertex from gate
+        for (const vertex of extendedGraph.keys()) {
+          const dist = Point.distance(gate, vertex);
+          if (dist > maxDist) {
+            maxDist = dist;
+            bestTarget = vertex;
+          }
+        }
+      }
+      
+      if (bestTarget) {
+        // Find path using the extended graph
+        let path = this.findPath(extendedGraph, gate, bestTarget);
+        
+        if (path && path.length > 1) {
+          // Filter out any points that move back toward center (0,0)
+          const filteredPath = [path[0]]; // Always include gate
+          let maxDistSoFar = Math.sqrt(gate.x * gate.x + gate.y * gate.y);
+          
+          for (let i = 1; i < path.length; i++) {
+            const point = path[i];
+            const pointDist = Math.sqrt(point.x * point.x + point.y * point.y);
+            
+            // Only include points that maintain or increase distance from center
+            if (pointDist >= maxDistSoFar - 5) { // Small tolerance
+              filteredPath.push(point);
+              maxDistSoFar = Math.max(maxDistSoFar, pointDist);
+            }
+          }
+          
+          if (filteredPath.length > 1) {
+            this.exteriorRoads.push(filteredPath);
+          }
+        }
+      }
     }
   }
   
