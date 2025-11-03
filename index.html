@@ -28,6 +28,56 @@
       border-radius: 4px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.2);
       font-family: sans-serif;
+      max-height: calc(100vh - 20px);
+      transition: transform 0.3s ease;
+    }
+    .controls.collapsed {
+      transform: translateX(-100%);
+    }
+    .export-float {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      z-index: 101;
+      display: none;
+    }
+    .controls.collapsed ~ .export-float {
+      display: block;
+    }
+    .export-float button {
+      background: #4a3d2c;
+      color: #f3ede2;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .export-float button:hover {
+      background: #5d4d38;
+    }
+    .controls-toggle {
+      position: absolute;
+      top: 10px;
+      right: -30px;
+      width: 30px;
+      height: 30px;
+      background: rgba(255, 255, 255, 0.95);
+      border: none;
+      border-radius: 0 4px 4px 0;
+      box-shadow: 2px 2px 8px rgba(0,0,0,0.2);
+      cursor: pointer;
+      font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #4a3d2c;
+    }
+    .controls-toggle:hover {
+      background: rgba(255, 255, 255, 1);
     }
     .controls h3 {
       margin: 0 0 10px 0;
@@ -103,6 +153,7 @@
         var controls = document.createElement('div');
         controls.className = 'controls';
         controls.innerHTML = '<h3>City Generator</h3>' +
+          '<button class="controls-toggle" id="toggle-controls">◀</button>' +
           '<label>Size: <span id="size-value">' + StateManager.size + '</span><br>' +
           '<input type="range" id="size-slider" min="6" max="40" value="' + StateManager.size + '"></label>' +
           '<label>Seed: <input type="number" id="seed-input" style="width: 120px; padding: 4px;" value="' + (StateManager.seed > 0 ? StateManager.seed : '') + '"></label>' +
@@ -117,6 +168,8 @@
           '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.4"></label>' +
           '<label>Size Chaos: <span id="size-chaos-value">0.6</span><br>' +
           '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.6"></label>' +
+          '<label>Cell Size Chaos: <span id="cell-chaos-value">0.0</span><br>' +
+          '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="0.0"></label>' +
           '<label>Alley Width: <span id="alley-width-value">0.6</span><br>' +
           '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="0.6"></label>' +
           '<label>Street Width: <span id="street-width-value">4.0</span><br>' +
@@ -127,10 +180,18 @@
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="5"></label>' +
           '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
           '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
+          '<label>Piazza Chance: <span id="plaza-chance-value">30%</span><br>' +
+          '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.3"></label>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
           '<button id="export-btn">Export PNG</button></div>';
         container.appendChild(controls);
+
+        // Add floating export button
+        var exportFloat = document.createElement('div');
+        exportFloat.className = 'export-float';
+        exportFloat.innerHTML = '<button id="export-btn-float">Export PNG</button>';
+        container.appendChild(exportFloat);
 
         var sizeSlider = document.getElementById('size-slider');
         var sizeValue = document.getElementById('size-value');
@@ -139,6 +200,8 @@
         var gridChaosValue = document.getElementById('grid-chaos-value');
         var sizeChaos = document.getElementById('size-chaos');
         var sizeChaosValue = document.getElementById('size-chaos-value');
+        var cellChaos = document.getElementById('cell-chaos');
+        var cellChaosValue = document.getElementById('cell-chaos-value');
         var alleyWidth = document.getElementById('alley-width');
         var alleyWidthValue = document.getElementById('alley-width-value');
         var streetWidth = document.getElementById('street-width');
@@ -149,6 +212,8 @@
         var wallThicknessValue = document.getElementById('wall-thickness-value');
         var zoomSlider = document.getElementById('zoom-slider');
         var zoomValue = document.getElementById('zoom-value');
+        var plazaChance = document.getElementById('plaza-chance');
+        var plazaChanceValue = document.getElementById('plaza-chance-value');
 
         seedInput.value = StateManager.seed;
 
@@ -163,6 +228,10 @@
         
         sizeChaos.addEventListener('input', function() {
           sizeChaosValue.textContent = sizeChaos.value;
+        });
+        
+        cellChaos.addEventListener('input', function() {
+          cellChaosValue.textContent = cellChaos.value;
         });
         
         alleyWidth.addEventListener('input', function() {
@@ -185,6 +254,10 @@
           zoomValue.textContent = parseFloat(zoomSlider.value).toFixed(1);
         });
         
+        plazaChance.addEventListener('input', function() {
+          plazaChanceValue.textContent = Math.round(parseFloat(plazaChance.value) * 100) + '%';
+        });
+        
         // Auto-apply on change (when released)
         sizeSlider.addEventListener('change', function() {
           StateManager.size = parseInt(sizeSlider.value);
@@ -198,6 +271,11 @@
         
         sizeChaos.addEventListener('change', function() {
           StateManager.sizeChaos = parseFloat(sizeChaos.value);
+          generator.generate();
+        });
+        
+        cellChaos.addEventListener('change', function() {
+          StateManager.cellChaos = parseFloat(cellChaos.value);
           generator.generate();
         });
         
@@ -224,6 +302,11 @@
         zoomSlider.addEventListener('change', function() {
           StateManager.zoom = parseFloat(zoomSlider.value);
           generator.render();
+        });
+        
+        plazaChance.addEventListener('change', function() {
+          StateManager.plazaChance = parseFloat(plazaChance.value);
+          generator.generate();
         });
         
         seedInput.addEventListener('change', function() {
@@ -269,6 +352,19 @@
           generator.render();
         });
 
+        // Toggle controls collapse
+        document.getElementById('toggle-controls').addEventListener('click', function() {
+          const controls = document.querySelector('.controls');
+          const btn = this;
+          if (controls.classList.contains('collapsed')) {
+            controls.classList.remove('collapsed');
+            btn.textContent = '◀';
+          } else {
+            controls.classList.add('collapsed');
+            btn.textContent = '▶';
+          }
+        });
+
         document.getElementById('regenerate-btn').addEventListener('click', function() {
           console.log('Regenerate button clicked');
           StateManager.seed = -1;
@@ -308,6 +404,14 @@
         });
 
         document.getElementById('export-btn').addEventListener('click', function() {
+          var canvas = generator.canvas;
+          var link = document.createElement('a');
+          link.download = 'city-' + StateManager.seed + '.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        });
+
+        document.getElementById('export-btn-float').addEventListener('click', function() {
           var canvas = generator.canvas;
           var link = document.createElement('a');
           link.download = 'city-' + StateManager.seed + '.png';

@@ -328,7 +328,86 @@ class Ward {
     const minSq = 20;
     const gridChaos = this.model.gridChaos || 0.2;
     const sizeChaos = this.model.sizeChaos || 0.3;
-    this.geometry = this.createAlleys(this.shape, minSq, gridChaos, sizeChaos, true);
+    
+    // Random chance to create an open piazza instead of buildings
+    if (Random.chance(StateManager.plazaChance)) {
+      // Create piazza with buildings around perimeter and empty center
+      this.geometry = this.createPiazza(this.shape);
+    } else {
+      // Normal ward with buildings
+      this.geometry = this.createAlleys(this.shape, minSq, gridChaos, sizeChaos, true);
+    }
+  }
+
+  createPiazza(polygon) {
+    // Create ring of buildings around the perimeter with open center
+    const buildings = [];
+    const minSq = 20;
+    const gridChaos = this.model.gridChaos || 0.2;
+    const sizeChaos = this.model.sizeChaos || 0.3;
+    
+    // Calculate center
+    const center = polygon.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= polygon.length;
+    center.y /= polygon.length;
+    
+    // Create inner ring (60-75% of original size)
+    const innerScale = 0.6 + Random.float() * 0.15;
+    const innerRing = polygon.map(p => new Point(
+      center.x + (p.x - center.x) * innerScale,
+      center.y + (p.y - center.y) * innerScale
+    ));
+    
+    // Create building strips between outer and inner rings, then subdivide each strip
+    for (let i = 0; i < polygon.length; i++) {
+      const j = (i + 1) % polygon.length;
+      
+      // Outer edge
+      const outerA = polygon[i];
+      const outerB = polygon[j];
+      
+      // Inner edge
+      const innerA = innerRing[i];
+      const innerB = innerRing[j];
+      
+      // Create strip quad between rings
+      const strip = [outerA, outerB, innerB, innerA];
+      
+      // Subdivide this strip into buildings using the alley logic
+      const stripBuildings = this.createAlleys(strip, minSq, gridChaos, sizeChaos, true);
+      buildings.push(...stripBuildings);
+    }
+    
+    // Optionally add small central feature
+    if (Random.chance(0.3)) {
+      const featureSize = 1.5 + Random.float() * 1.5;
+      const isCircular = Random.chance(0.5);
+      
+      if (isCircular) {
+        const segments = 12;
+        const feature = [];
+        for (let i = 0; i < segments; i++) {
+          const angle = (i / segments) * Math.PI * 2;
+          feature.push(new Point(
+            center.x + Math.cos(angle) * featureSize,
+            center.y + Math.sin(angle) * featureSize
+          ));
+        }
+        buildings.push(feature);
+      } else {
+        const angle = Random.float() * Math.PI * 0.5;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        buildings.push([
+          new Point(center.x - featureSize*cos + featureSize*sin, center.y - featureSize*sin - featureSize*cos),
+          new Point(center.x + featureSize*cos + featureSize*sin, center.y + featureSize*sin - featureSize*cos),
+          new Point(center.x + featureSize*cos - featureSize*sin, center.y + featureSize*sin + featureSize*cos),
+          new Point(center.x - featureSize*cos - featureSize*sin, center.y - featureSize*sin + featureSize*cos)
+        ]);
+      }
+    }
+    
+    return buildings;
   }
 
   createAlleys(polygon, minSq, gridChaos, sizeChaos, split) {
@@ -500,11 +579,75 @@ class Ward {
 }
 
 // Special ward types
+class Plaza extends Ward {
+  buildGeometry() {
+    // Plaza is an EMPTY open square - no buildings at all!
+    this.geometry = [];
+  }
+  
+  getLabel() {
+    return 'Plaza';
+  }
+}
+
 class Castle extends Ward {
   buildGeometry() {
-    const shrunkBlock = this.shrinkPolygon(this.shape, 4);
-    const area = Math.sqrt(this.polygonArea(shrunkBlock));
-    this.geometry = this.createAlleys(shrunkBlock, 20, 0.1, 0.1, Random.chance(0.6));
+    // Citadel with defensive walls, towers, and gate
+    const center = this.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= this.shape.length;
+    center.y /= this.shape.length;
+    
+    this.geometry = [];
+    
+    // Inner citadel wall (thick defensive perimeter)
+    const innerWall = this.shrinkPolygon(this.shape, 3);
+    this.citadelWall = innerWall;
+    
+    // Add corner towers
+    const towerSize = 3;
+    const towers = [];
+    for (let i = 0; i < innerWall.length; i++) {
+      const v = innerWall[i];
+      const prev = innerWall[(i - 1 + innerWall.length) % innerWall.length];
+      const next = innerWall[(i + 1) % innerWall.length];
+      
+      // Calculate angle at this vertex
+      const dx1 = v.x - prev.x, dy1 = v.y - prev.y;
+      const dx2 = next.x - v.x, dy2 = next.y - v.y;
+      const angle1 = Math.atan2(dy1, dx1);
+      const angle2 = Math.atan2(dy2, dx2);
+      const angleDiff = Math.abs(angle1 - angle2);
+      
+      // Place tower at corners (where angle changes significantly)
+      if (angleDiff > 0.5 || i % Math.max(2, Math.floor(innerWall.length / 4)) === 0) {
+        const segments = 8;
+        const tower = [];
+        for (let j = 0; j < segments; j++) {
+          const a = (j / segments) * Math.PI * 2;
+          tower.push(new Point(v.x + Math.cos(a) * towerSize, v.y + Math.sin(a) * towerSize));
+        }
+        towers.push(tower);
+      }
+    }
+    
+    // Find gate position (towards center of city)
+    const cityCenter = new Point(0, 0);
+    let gateVertex = innerWall[0];
+    let maxDist = -Infinity;
+    for (const v of innerWall) {
+      const dist = Point.distance(v, cityCenter);
+      if (dist > maxDist) {
+        maxDist = dist;
+        gateVertex = v;
+      }
+    }
+    this.citadelGate = gateVertex;
+    
+    // Inner keep buildings
+    const keep = this.shrinkPolygon(innerWall, 8);
+    const buildings = this.createAlleys(keep, 15, 0.1, 0.1, Random.chance(0.4));
+    
+    this.geometry = [...buildings, ...towers];
   }
 
   shrinkPolygon(poly, amount) {
@@ -679,10 +822,14 @@ class CityModel {
   buildPatches() {
     const sa = Random.float() * 2 * Math.PI;
     const points = [];
+    const cellChaos = StateManager.cellChaos || 0.0;
     
     for (let i = 0; i < this.nPatches * 8; i++) {
       const a = sa + Math.sqrt(i) * 5;
-      const r = i === 0 ? 0 : 10 + i * (2 + Random.float());
+      // Add cell chaos variation to radius
+      const baseR = i === 0 ? 0 : 10 + i * (2 + Random.float());
+      const chaosOffset = cellChaos * (Random.float() - 0.5) * baseR * 0.5;
+      const r = baseR + chaosOffset;
       points.push(new Point(Math.cos(a) * r, Math.sin(a) * r));
     }
     
@@ -862,6 +1009,31 @@ class CityModel {
         }
       }
     }
+    
+    // Add exterior roads from gates
+    this.exteriorRoads = [];
+    for (const gate of this.gates) {
+      // Calculate direction away from city center
+      const angle = Math.atan2(gate.y, gate.x);
+      const roadLength = this.cityRadius * 1.5;
+      
+      // Create slightly wiggly road
+      const road = [gate];
+      const segments = 5;
+      for (let i = 1; i <= segments; i++) {
+        const t = i / segments;
+        const dist = roadLength * t;
+        const wiggle = (Random.float() - 0.5) * 10;
+        const perpAngle = angle + Math.PI / 2;
+        
+        const point = new Point(
+          gate.x + Math.cos(angle) * dist + Math.cos(perpAngle) * wiggle,
+          gate.y + Math.sin(angle) * dist + Math.sin(perpAngle) * wiggle
+        );
+        road.push(point);
+      }
+      this.exteriorRoads.push(road);
+    }
   }
   
   buildTopology() {
@@ -1005,6 +1177,11 @@ class CityModel {
     let typeIndex = 0;
     const innerPatches = this.patches.filter(p => p.withinCity && p !== this.plaza && p !== this.citadel);
     
+    // Plaza if needed
+    if (this.plaza) {
+      this.plaza.ward = new Plaza(this, this.plaza);
+    }
+    
     // Castle on citadel if present
     if (this.citadel) {
       this.citadel.ward = new Castle(this, this.citadel);
@@ -1130,7 +1307,20 @@ class CityRenderer {
       this.drawStreet(ctx, street);
     }
     
+    // Draw exterior roads
+    if (this.model.exteriorRoads) {
+      for (const road of this.model.exteriorRoads) {
+        this.drawExteriorRoad(ctx, road);
+      }
+    }
+    
     for (const patch of this.model.patches) {
+      // Draw citadel walls for Castle wards
+      if (patch.ward instanceof Castle) {
+        this.drawCitadelWall(ctx, patch.ward);
+      }
+      
+      // Draw ward geometry (buildings)
       if (patch.ward && patch.ward.geometry) {
         this.drawBuildings(ctx, patch.ward.geometry);
       }
@@ -1167,8 +1357,8 @@ class CityRenderer {
     ctx.closePath();
     
     // Fill based on type
-    if (patch === this.model.plaza) {
-      ctx.fillStyle = '#E8DCC8';
+    if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
+      ctx.fillStyle = '#D4C5A0'; // More distinct tan/sand color for central plaza
     } else if (patch === this.model.citadel) {
       ctx.fillStyle = '#D5C8B8';
     } else if (patch.ward instanceof Farm) {
@@ -1231,6 +1421,42 @@ class CityRenderer {
     }
   }
 
+  drawCitadelWall(ctx, ward) {
+    if (!ward.citadelWall) return;
+    
+    const wall = ward.citadelWall;
+    const wallThickness = ((StateManager.wallThickness || 2) * 1.5) / this.scale;
+    
+    ctx.strokeStyle = Palette.dark;
+    ctx.lineWidth = wallThickness;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    // Draw the citadel wall
+    ctx.beginPath();
+    ctx.moveTo(wall[0].x, wall[0].y);
+    for (let i = 1; i < wall.length; i++) {
+      ctx.lineTo(wall[i].x, wall[i].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    
+    // Erase gap at gate
+    if (ward.citadelGate) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = wallThickness * 2.5;
+      ctx.lineCap = 'round';
+      
+      ctx.beginPath();
+      ctx.arc(ward.citadelGate.x, ward.citadelGate.y, wallThickness * 2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.restore();
+    }
+  }
+
   drawStreet(ctx, street) {
     if (!StateManager.showStreets || street.length < 2) return;
     
@@ -1242,6 +1468,22 @@ class CityRenderer {
     
     ctx.strokeStyle = Palette.light + '80';
     ctx.lineWidth = (StateManager.streetWidth || 2.0) / this.scale;
+    ctx.stroke();
+  }
+
+  drawExteriorRoad(ctx, road) {
+    if (!StateManager.showStreets || road.length < 2) return;
+    
+    ctx.beginPath();
+    ctx.moveTo(road[0].x, road[0].y);
+    for (let i = 1; i < road.length; i++) {
+      ctx.lineTo(road[i].x, road[i].y);
+    }
+    
+    // Thicker and more visible than interior streets
+    ctx.strokeStyle = Palette.dark + '60';
+    ctx.lineWidth = (StateManager.streetWidth * 1.5 || 3.0) / this.scale;
+    ctx.lineCap = 'round';
     ctx.stroke();
   }
 
@@ -1304,10 +1546,19 @@ class CityRenderer {
     cy /= patch.shape.length;
     
     ctx.save();
-    ctx.font = `${4 / this.scale}px serif`;
-    ctx.fillStyle = Palette.dark;
+    const fontSize = 12 / this.scale; // Bigger font
+    ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    
+    // White border/background
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 4 / this.scale;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(labelText, cx, cy);
+    
+    // Black text
+    ctx.fillStyle = '#000000';
     ctx.fillText(labelText, cx, cy);
     ctx.restore();
   }
@@ -1325,6 +1576,7 @@ class StateManager {
   static wallsNeeded = true;
   static gridChaos = 0.4;
   static sizeChaos = 0.6;
+  static cellChaos = 0.0;
   static alleyWidth = 0.6;
   static streetWidth = 4.0;
   static buildingGap = 1.8;
@@ -1334,6 +1586,7 @@ class StateManager {
   static showBuildings = true;
   static showStreets = true;
   static zoom = 1.0;
+  static plazaChance = 0.3; // Chance of central feature in plaza
 
   static pullParams() {
     const params = new URLSearchParams(window.location.search);
