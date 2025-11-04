@@ -184,6 +184,9 @@
           '<label><input type="checkbox" id="cell-outlines-check"> Show Cell Outlines</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
+          '<label><input type="checkbox" id="view-architecture-check"> Use View Architecture</label>' +
+          '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
+          '<label><input type="checkbox" id="show-trees-check"> Show Trees</label>' +
           '</div>' +
           '<div class="slider-grid">' +
           '<label>Grid Chaos: <span id="grid-chaos-value">0.4</span><br>' +
@@ -372,6 +375,23 @@
           StateManager.showStreets = this.checked;
           generator.render();
         });
+        
+        document.getElementById('view-architecture-check').addEventListener('change', function() {
+          StateManager.useViewArchitecture = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('flythrough-check').addEventListener('change', function() {
+          generator.toggleFlythrough();
+        });
+        
+        document.getElementById('show-trees-check').addEventListener('change', function() {
+          StateManager.showTrees = this.checked;
+          generator.render();
+        });
+
+        // Make generator globally accessible for flythrough
+        window.generator = generator;
 
         // Toggle controls collapse
         document.getElementById('toggle-controls').addEventListener('click', function() {
