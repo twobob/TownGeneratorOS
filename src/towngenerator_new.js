@@ -15,6 +15,13 @@ const FLYTHROUGH_CONFIG = {
   LOOK_AHEAD_DISTANCE: 5.0,  // How far ahead the camera looks
 };
 
+// 3D Rendering Configuration
+const RENDER_3D_CONFIG = {
+  NEAR_PLANE_CULL_THRESHOLD: 0.5  // View-space Z threshold for near-plane culling (positive = in front of camera)
+                                   // Cull triangles with any vertex closer than this distance
+                                   // Override in console: RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD = 1.0
+};
+
 // ============================================================================
 // Utility Classes
 // ============================================================================
@@ -1000,10 +1007,10 @@ class Farm extends Ward {
     const sin = Math.sin(angle);
     
     const housing = [
-      new Point(pos.x + cos * size - sin * size, pos.y + sin * size + cos * size),
-      new Point(pos.x + cos * size + sin * size, pos.y + sin * size - cos * size),
+      new Point(pos.x - cos * size - sin * size, pos.y - sin * size + cos * size),
       new Point(pos.x - cos * size + sin * size, pos.y - sin * size - cos * size),
-      new Point(pos.x - cos * size - sin * size, pos.y - sin * size + cos * size)
+      new Point(pos.x + cos * size + sin * size, pos.y + sin * size - cos * size),
+      new Point(pos.x + cos * size - sin * size, pos.y + sin * size + cos * size)
     ];
     
     this.buildings = [housing];
@@ -1270,36 +1277,114 @@ class CityModel {
   }
 
   buildStreets() {
-    if (this.gates.length === 0 || !this.plaza) {
-      return;
-    }
+    // console.log('buildStreets() called');
+    // console.log('Gates:', this.gates ? this.gates.length : 0);
+    // console.log('Plaza:', this.plaza ? 'exists' : 'none');
+    // console.log('Border shape:', this.borderShape ? this.borderShape.length : 0);
     
     // Build topology graph for pathfinding
     const topology = this.buildTopology();
     
-    // Find nearest plaza corner for each gate
-    for (const gate of this.gates) {
-      let nearestPlazaVertex = null;
+    // Determine street target based on what's available
+    let streetTarget = null;
+    let targetVertices = [];
+    
+    if (this.plaza && this.plaza.shape) {
+      // Use plaza vertices as targets
+      targetVertices = this.plaza.shape;
+      // console.log('Using plaza vertices as targets:', targetVertices.length);
+    } else {
+      // No plaza: aim for city center or nearest cell boundary to center
+      const center = new Point(0, 0);
+      
+      // Collect all vertices from topology that are closest to center
+      for (const vertex of topology.keys()) {
+        targetVertices.push(vertex);
+      }
+      
+      // Sort by distance to center and take closest ones
+      targetVertices.sort((a, b) => {
+        const distA = Point.distance(a, center);
+        const distB = Point.distance(b, center);
+        return distA - distB;
+      });
+      
+      // Use top 4 closest vertices as targets
+      targetVertices = targetVertices.slice(0, 4);
+      // console.log('No plaza - using closest vertices to center as targets:', targetVertices.length);
+    }
+    
+    // Get gates or create virtual gates if walls disabled
+    let gatePoints = this.gates;
+    
+    if (gatePoints.length === 0 && this.borderShape && this.borderShape.length > 0) {
+      // console.log('No gates found - creating virtual gates');
+      // No gates (walls disabled): create virtual gate points at cardinal directions
+      const cityRadius = this.cityRadius || 100;
+      gatePoints = [
+        new Point(cityRadius, 0),           // East
+        new Point(0, cityRadius),           // North
+        new Point(-cityRadius, 0),          // West
+        new Point(0, -cityRadius)           // South
+      ];
+      
+      // Snap each virtual gate to nearest border vertex
+      const snappedGates = [];
+      for (const virtualGate of gatePoints) {
+        let nearest = this.borderShape[0];
+        let minDist = Point.distance(virtualGate, nearest);
+        
+        for (const borderVertex of this.borderShape) {
+          const dist = Point.distance(virtualGate, borderVertex);
+          if (dist < minDist) {
+            minDist = dist;
+            nearest = borderVertex;
+          }
+        }
+        snappedGates.push(nearest);
+      }
+      gatePoints = snappedGates;
+      // console.log('Created virtual gates:', gatePoints.length);
+    }
+    
+    if (gatePoints.length === 0 || targetVertices.length === 0) {
+      console.warn('Cannot build streets - gates:', gatePoints.length, 'targets:', targetVertices.length);
+      return; // Can't build streets without gates or targets
+    }
+    
+    // console.log('Building streets from', gatePoints.length, 'gates to', targetVertices.length, 'targets');
+    
+    // Find nearest target vertex for each gate
+    for (const gate of gatePoints) {
+      let nearestTarget = null;
       let minDist = Infinity;
       
-      for (const vertex of this.plaza.shape) {
+      for (const vertex of targetVertices) {
         const dist = Point.distance(gate, vertex);
         if (dist < minDist) {
           minDist = dist;
-          nearestPlazaVertex = vertex;
+          nearestTarget = vertex;
         }
       }
       
-      if (nearestPlazaVertex) {
-        const path = this.findPath(topology, gate, nearestPlazaVertex);
+      if (nearestTarget) {
+        const path = this.findPath(topology, gate, nearestTarget);
         if (path && path.length > 1) {
           this.streets.push(path);
+          // console.log('Added street with', path.length, 'points');
+        } else {
+          console.warn('Failed to find path from gate to target');
         }
       }
     }
     
+    // console.log('Total streets built:', this.streets.length);
+    
     // Add exterior roads from gates
     this.exteriorRoads = [];
+    
+    // Use actual gates or virtual gates for exterior roads
+    const roadStartPoints = gatePoints;
     
     // Get all exterior patches
     const exteriorPatches = this.patches.filter(p => p.ward && !p.withinCity);
@@ -1322,8 +1407,8 @@ class CityModel {
       }
     }
     
-    // For each gate, pathfind outward to a far point
-    for (const gate of this.gates) {
+    // For each gate (real or virtual), pathfind outward to a far point
+    for (const gate of roadStartPoints) {
       const angle = Math.atan2(gate.y, gate.x);
       const roadLength = this.cityRadius * 1.5;
       
@@ -1627,11 +1712,20 @@ class CityRenderer {
     this.ctx = canvas.getContext('2d');
     this.model = model;
     this.formalMap = null;
+    this.globalTrees = null;
+    this.flythroughCamera = new FlythroughCamera();
+    
+    // 3D rendering support
+    this.meshCache3D = null;  // Cached 3D meshes {buildings: [], walls: [], streets: []}
+    this.camera3D = null;      // Renderer3D.Camera instance
   }
 
   render() {
-    // Use flythrough camera if active
-    if (StateManager.flythroughActive && window.generator && window.generator.flythroughCamera) {
+    // Use 3D view if enabled
+    if (StateManager.view3D) {
+      this.render3D();
+    } else if (StateManager.flythroughActive && window.generator && window.generator.flythroughCamera) {
+      // Use flythrough camera if active
       window.generator.flythroughCamera.renderFirstPerson();
     } else if (StateManager.useViewArchitecture) {
       this.renderWithViews();
@@ -1674,18 +1768,29 @@ class CityRenderer {
     
     // Draw using view architecture
     this.formalMap.draw(ctx, {
-      showBuildings: true,
-      showFarms: true,
-      showRoads: true,
+      showBuildings: StateManager.showBuildings,
+      showFarms: StateManager.showBuildings,
+      showRoads: StateManager.showStreets,
       showWalls: true,
-      showMajorRoads: true,
-      showMinorRoads: true,
+      showMajorRoads: StateManager.showStreets,
+      showMinorRoads: StateManager.showStreets,
       showTowers: true,
       showGates: true,
-      showFocus: StateManager.showFocus || false
+      showFocus: StateManager.showFocus || false,
+      showCellOutlines: StateManager.showCellOutlines
     });
     
-    // Draw labels if enabled
+    // Draw trees if enabled (before labels so labels appear on top)
+    if (StateManager.showTrees) {
+      if (!this.globalTrees) {
+        this.globalTrees = this.spawnGlobalTrees();
+      }
+      if (this.globalTrees && this.globalTrees.length > 0) {
+        this.drawTrees(ctx, this.globalTrees);
+      }
+    }
+    
+    // Draw labels if enabled (after trees so they appear on top)
     if (StateManager.showLabels) {
       for (const patch of this.model.patches) {
         if (patch.ward) {
@@ -1695,16 +1800,6 @@ class CityRenderer {
         } else if (patch === this.model.citadel && !patch.ward) {
           this.drawLabel(ctx, patch, 'Citadel');
         }
-      }
-    }
-    
-    // Draw trees if enabled
-    if (StateManager.showTrees) {
-      if (!this.globalTrees) {
-        this.globalTrees = this.spawnGlobalTrees();
-      }
-      if (this.globalTrees && this.globalTrees.length > 0) {
-        this.drawTrees(ctx, this.globalTrees);
       }
     }
     
@@ -1914,7 +2009,18 @@ class CityRenderer {
       this.drawGate(ctx, gate);
     }
     
-    // Draw ward labels if enabled
+    // Draw trees if enabled (before labels so labels appear on top)
+    if (StateManager.showTrees) {
+      // Global tree spawning across all patches
+      if (!this.globalTrees) {
+        this.globalTrees = this.spawnGlobalTrees();
+      }
+      if (this.globalTrees && this.globalTrees.length > 0) {
+        this.drawTrees(ctx, this.globalTrees);
+      }
+    }
+    
+    // Draw ward labels if enabled (after trees so they appear on top)
     if (StateManager.showLabels) {
       for (const patch of this.model.patches) {
         if (patch.ward) {
@@ -1924,17 +2030,6 @@ class CityRenderer {
         } else if (patch === this.model.citadel && !patch.ward) {
           this.drawLabel(ctx, patch, 'Citadel');
         }
-      }
-    }
-    
-    // Draw trees if enabled
-    if (StateManager.showTrees) {
-      // Global tree spawning across all patches
-      if (!this.globalTrees) {
-        this.globalTrees = this.spawnGlobalTrees();
-      }
-      if (this.globalTrees && this.globalTrees.length > 0) {
-        this.drawTrees(ctx, this.globalTrees);
       }
     }
     
@@ -2396,6 +2491,742 @@ class CityRenderer {
     ctx.fillText(labelText, cx, cy);
     ctx.restore();
   }
+
+
+  
+
+  getWardBuildingHeight(wardType) {
+    const heights = {
+      'castle': 800,
+      'cathedral': 960,
+      'temple': 896,
+      'market': 384,
+      'patriciate': 576,
+      'merchants': 480,
+      'craftsmen': 384,
+      'residential': 384,
+      'slum': 256,
+      'farm': 192,
+      'park': 0,
+      'plaza': 0,
+      'administration': 576  // Same as patriciate
+    };
+    return heights[wardType] || 6;
+  }
+
+  getWardColor3D(wardType) {
+    const colors = {
+      'castle': '#9B8D7B',
+      'cathedral': '#4169E1',      // Royal blue
+      'temple': '#9370DB',         // Medium purple
+      'market': '#FFD700',         // Gold
+      'patriciate': '#FF1493',     // Deep pink
+      'merchants': '#00CED1',      // Dark turquoise
+      'craftsmen': '#A89878',      // Original tan
+      'residential': '#32CD32',    // Lime green
+      'slum': '#696969',           // Dim gray
+      'farm': '#D8C8A8',
+      'park': '#C8D4A8',
+      'plaza': '#D4C5A0',
+      'administration': '#FF0000', // Bright red
+      'military': '#8B0000'        // Dark red
+    };
+    return colors[wardType] || '#A89878';
+  }
+
+  calculatePolygonArea(polygon) {
+    let area = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const j = (i + 1) % polygon.length;
+      area += polygon[i].x * polygon[j].y;
+      area -= polygon[j].x * polygon[i].y;
+    }
+    return Math.abs(area / 2);
+  }
+
+  shrinkPolygon(polygon, amount) {
+    if (!polygon || polygon.length < 3 || amount <= 0) return polygon;
+    
+    // Calculate centroid
+    let cx = 0, cy = 0;
+    for (const p of polygon) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= polygon.length;
+    cy /= polygon.length;
+    
+    // Shrink each vertex toward centroid
+    const shrunk = [];
+    for (const p of polygon) {
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist < amount) {
+        // Skip vertices too close to center
+        continue;
+      }
+      
+      const ratio = (dist - amount) / dist;
+      shrunk.push(new Point(
+        cx + dx * ratio,
+        cy + dy * ratio
+      ));
+    }
+    
+    return shrunk.length >= 3 ? shrunk : polygon;
+  }
+
+  createRoadMesh(path, width, height) {
+    if (!path || path.length < 2) return null;
+    
+    const vertices = [];
+    const faces = [];
+    const halfWidth = width / 2;
+    
+    // Create vertices along both sides of the path
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      
+      // Calculate perpendicular direction
+      let perpX, perpY;
+      
+      if (i === 0) {
+        // First point: use direction to next point
+        const dx = path[i + 1].x - p.x;
+        const dy = path[i + 1].y - p.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        perpX = -dy / len;
+        perpY = dx / len;
+      } else if (i === path.length - 1) {
+        // Last point: use direction from previous point
+        const dx = p.x - path[i - 1].x;
+        const dy = p.y - path[i - 1].y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        perpX = -dy / len;
+        perpY = dx / len;
+      } else {
+        // Middle points: average of incoming and outgoing directions
+        const dx1 = p.x - path[i - 1].x;
+        const dy1 = p.y - path[i - 1].y;
+        const len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+        const dx2 = path[i + 1].x - p.x;
+        const dy2 = path[i + 1].y - p.y;
+        const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+        
+        const avgDx = (dx1 / len1 + dx2 / len2) / 2;
+        const avgDy = (dy1 / len1 + dy2 / len2) / 2;
+        const avgLen = Math.sqrt(avgDx * avgDx + avgDy * avgDy);
+        perpX = -avgDy / avgLen;
+        perpY = avgDx / avgLen;
+      }
+      
+      // Create 4 vertices: left bottom, right bottom, left top, right top
+      const leftX = p.x + perpX * halfWidth;
+      const leftZ = p.y + perpY * halfWidth;
+      const rightX = p.x - perpX * halfWidth;
+      const rightZ = p.y - perpY * halfWidth;
+      
+      vertices.push(new window.Renderer3D.Vec3(leftX, 0, leftZ));           // Bottom left
+      vertices.push(new window.Renderer3D.Vec3(rightX, 0, rightZ));         // Bottom right
+      vertices.push(new window.Renderer3D.Vec3(leftX, height, leftZ));      // Top left
+      vertices.push(new window.Renderer3D.Vec3(rightX, height, rightZ));    // Top right
+    }
+    
+    // Create faces connecting segments
+    for (let i = 0; i < path.length - 1; i++) {
+      const baseIdx = i * 4;
+      const nextIdx = (i + 1) * 4;
+      
+      // Top surface (2 triangles)
+      faces.push([baseIdx + 2, nextIdx + 2, baseIdx + 3]);
+      faces.push([nextIdx + 2, nextIdx + 3, baseIdx + 3]);
+      
+      // Bottom surface (2 triangles)
+      faces.push([baseIdx, baseIdx + 1, nextIdx]);
+      faces.push([nextIdx, baseIdx + 1, nextIdx + 1]);
+      
+      // Left side (2 triangles)
+      faces.push([baseIdx, nextIdx, baseIdx + 2]);
+      faces.push([nextIdx, nextIdx + 2, baseIdx + 2]);
+      
+      // Right side (2 triangles)
+      faces.push([baseIdx + 1, baseIdx + 3, nextIdx + 1]);
+      faces.push([nextIdx + 1, baseIdx + 3, nextIdx + 3]);
+    }
+    
+    return { vertices, faces };
+  }
+
+  // Subdivide a path into smaller segments for better triangle resolution
+  subdivideWallPath(path, maxSegmentLength = 10) {
+    const subdivided = [];
+    for (let i = 0; i < path.length; i++) {
+      const p1 = path[i];
+      const p2 = path[(i + 1) % path.length];
+      subdivided.push(p1);
+      
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      
+      if (len > maxSegmentLength) {
+        const numSegments = Math.ceil(len / maxSegmentLength);
+        for (let j = 1; j < numSegments; j++) {
+          const t = j / numSegments;
+          subdivided.push({
+            x: p1.x + dx * t,
+            y: p1.y + dy * t
+          });
+        }
+      }
+    }
+    return subdivided;
+  }
+
+  build3DMeshes() {
+    // Invalidate cache if wall thickness or building gap changed
+    const cacheKey = `${StateManager.wallThickness}_${StateManager.buildingGap}_${StateManager.buildingCount}`;
+    if (this.meshCache3D && this.meshCache3DKey === cacheKey) {
+      return this.meshCache3D;
+    }
+
+    if (!window.Renderer3D) {
+      console.error('Renderer3D not loaded');
+      return { buildings: [], walls: [], streets: [], ground: null };
+    }
+
+    const { Vec3, extrudePolygonToMesh } = window.Renderer3D;
+    const buildings = [];
+    const walls = [];
+    const streets = [];
+    
+    // Create ground plane - 256x256 grid, 2x city radius (4x larger than previous 0.5x), scaled 64x
+    const cityRadius = this.model.cityRadius || 100;
+    const groundSize = cityRadius * 2 * 64;  // Scale 64x, 2x city radius
+    const gridResolution = 256;  // 16x more triangles (was 64x64, now 256x256)
+    const cellSize = (groundSize * 2) / gridResolution;
+    
+    const groundVertices = [];
+    const groundFaces = [];
+    
+    // Create grid vertices
+    for (let row = 0; row <= gridResolution; row++) {
+      for (let col = 0; col <= gridResolution; col++) {
+        const x = -groundSize + col * cellSize;
+        const z = -groundSize + row * cellSize;
+        groundVertices.push(new Vec3(x, 0, z));
+      }
+    }
+    
+    // Create grid faces (2 triangles per cell)
+    for (let row = 0; row < gridResolution; row++) {
+      for (let col = 0; col < gridResolution; col++) {
+        const topLeft = row * (gridResolution + 1) + col;
+        const topRight = topLeft + 1;
+        const bottomLeft = (row + 1) * (gridResolution + 1) + col;
+        const bottomRight = bottomLeft + 1;
+        
+        // Top face triangles
+        groundFaces.push([topLeft, topRight, bottomLeft]);
+        groundFaces.push([topRight, bottomRight, bottomLeft]);
+        
+        // Bottom face triangles (reverse winding)
+        groundFaces.push([topLeft, bottomLeft, topRight]);
+        groundFaces.push([topRight, bottomLeft, bottomRight]);
+      }
+    }
+    
+    const ground = {
+      mesh: {
+        vertices: groundVertices,
+        faces: groundFaces
+      },
+      color: '#7A9B7A',
+      type: 'ground'
+    };
+
+    for (const patch of this.model.patches) {
+      if (!patch.ward || !patch.ward.geometry) continue;
+
+      const wardType = patch.ward.wardType || 'residential';
+      const buildingHeight = this.getWardBuildingHeight(wardType);
+
+      // Group buildings by ward to reduce fragmentation
+      const wardBuildings = [];
+      for (const polygon of patch.ward.geometry) {
+        if (!polygon || polygon.length < 3) continue;
+        
+        // Only create meshes for buildings larger than a minimum size
+        const area = this.calculatePolygonArea(polygon);
+        if (area < 10) continue; // Increased threshold to skip more tiny polygons
+        
+        // Debug farm buildings
+        if (patch.ward instanceof Farm && wardBuildings.length === 0) {
+          // console.log('Farm building polygon:', polygon);
+          // console.log('Farm building area:', area);
+        }
+        
+        // Apply building gap by shrinking polygon
+        const buildingGap = StateManager.buildingGap || 0;
+        let finalPolygon = polygon;
+        
+        if (buildingGap > 0) {
+          // Shrink polygon inward by buildingGap
+          finalPolygon = this.shrinkPolygon(polygon, buildingGap);
+          if (!finalPolygon || finalPolygon.length < 3) continue;
+        }
+        
+        const polygon2D = finalPolygon.map(p => ({ x: p.x * 64, y: p.y * 64 }));
+        
+        // Ensure the polygon is clean and valid before extrusion
+        if (!window.extrudeBuildingMesh) {
+          console.error('extrudeBuildingMesh not loaded');
+          continue;
+        }
+        
+        const mesh = window.extrudeBuildingMesh(polygon2D, buildingHeight);
+        
+        wardBuildings.push({
+          mesh: mesh,
+          color: this.getWardColor3D(wardType),
+          wardType: wardType,
+          height: buildingHeight
+        });
+      }
+      
+      // Add all ward buildings
+      buildings.push(...wardBuildings);
+    }
+
+    if (this.model.borderShape && this.model.borderShape.length > 0) {
+      const wallHeight = 960;
+      const wallThickness = (StateManager.wallThickness || 5) * 64;
+      const wallPath = this.subdivideWallPath(this.model.borderShape.map(p => ({x: p.x * 64, y: p.y * 64})), 960); // Subdivide into 120-unit segments
+      const wallMesh = window.extrudeWallPath(wallPath, wallHeight, wallThickness);
+      
+      walls.push({
+        mesh: wallMesh,
+        color: '#8B7D6B',
+        type: 'city-wall'
+      });
+    }
+
+    for (const patch of this.model.patches) {
+      if (patch.ward instanceof Castle && patch.ward.wall) {
+        const wallHeight = 768;
+        const wallThickness = (StateManager.wallThickness * 0.5 || 2.5) * 64;
+        const wallPath = this.subdivideWallPath(patch.ward.wall.map(p => ({x: p.x * 64, y: p.y * 64})), 768); // Subdivide into 96-unit segments
+        const wallMesh = window.extrudeWallPath(wallPath, wallHeight, wallThickness);
+        
+        walls.push({
+          mesh: wallMesh,
+          color: '#9B8D7B',
+          type: 'citadel-wall'
+        });
+      }
+    }
+
+    // Build street meshes from this.streets (not this.model.streets)
+    const cityStreets = this.streets || this.model.streets || [];
+    // console.log(`Building 3D meshes - this.streets: ${this.streets ? this.streets.length : 'undefined'}`);
+    // console.log(`Building 3D meshes - this.model.streets: ${this.model.streets ? this.model.streets.length : 'undefined'}`);
+    // console.log(`Building 3D meshes for ${cityStreets.length} streets`);
+    
+    for (const street of cityStreets) {
+      if (!street || street.length < 2) continue;
+      
+      // Streets are paths (arrays of points), not polygons
+      // Create a ribbon/road mesh along the path
+      const streetWidth = (StateManager.streetWidth || 4) * 64;
+      const roadMesh = this.createRoadMesh(street.map(p => ({x: p.x * 64, y: p.y * 64})), streetWidth, 0.1);
+      
+      if (roadMesh && roadMesh.vertices.length > 0) {
+        streets.push({
+          mesh: roadMesh,
+          color: '#888888',
+          type: 'street'
+        });
+      }
+    }
+    
+    // Also build exterior roads if they exist
+    const cityRoads = this.exteriorRoads || this.model.exteriorRoads || [];
+    // console.log(`Building 3D meshes - this.exteriorRoads: ${this.exteriorRoads ? this.exteriorRoads.length : 'undefined'}`);
+    // console.log(`Building 3D meshes - this.model.exteriorRoads: ${this.model.exteriorRoads ? this.model.exteriorRoads.length : 'undefined'}`);
+    // console.log(`Building 3D meshes for ${cityRoads.length} exterior roads`);
+    
+    for (const road of cityRoads) {
+      if (!road || road.length < 2) continue;
+      
+      const roadWidth = (StateManager.streetWidth || 4) * 64;
+      const roadMesh = this.createRoadMesh(road.map(p => ({x: p.x * 64, y: p.y * 64})), roadWidth, 0.1);
+      
+      if (roadMesh && roadMesh.vertices.length > 0) {
+        streets.push({
+          mesh: roadMesh,
+          color: '#888888',
+          type: 'road'
+        });
+      }
+    }
+
+    this.meshCache3D = { buildings, walls, streets, ground };
+    this.meshCache3DKey = cacheKey;
+    return this.meshCache3D;
+  }
+
+  render3D() {
+    if (!window.Renderer3D) {
+      console.error('Renderer3D not loaded');
+      return;
+    }
+
+    const ctx = this.ctx;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, width, height);
+
+    const { Camera, drawMesh } = window.Renderer3D;
+
+    const scene = this.build3DMeshes();
+
+    if (!this.camera3D) {
+      this.camera3D = new Camera(
+        StateManager.camera3DFOV,
+        width / height,
+        StateManager.camera3DNear,
+        StateManager.camera3DFar
+      );
+    } else {
+      this.camera3D.setPerspective(
+        StateManager.camera3DFOV,
+        width / height,
+        StateManager.camera3DNear,
+        StateManager.camera3DFar
+      );
+    }
+
+    const cityRadius = this.model.cityRadius || 100;
+    const cameraDistance = cityRadius * 1.2 * 64;  // Scale 64x
+    const angle = StateManager.camera3DAngle;
+    
+    // Apply pan offset from 2D view (inverted to match 2D camera behavior)
+    const panX = -StateManager.cameraOffsetX / StateManager.zoom * 64;  // Scale 64x
+    const panZ = -StateManager.cameraOffsetY / StateManager.zoom * 64;  // Scale 64x
+    
+    const camX = Math.sin(angle) * cameraDistance + panX;
+    const camY = StateManager.camera3DHeight;
+    const camZ = Math.cos(angle) * cameraDistance + panZ;
+    
+    this.camera3D.setPosition(new window.Renderer3D.Vec3(camX, camY, camZ));
+    this.camera3D.lookAt(new window.Renderer3D.Vec3(panX, 0, panZ));
+
+    ctx.save();
+    ctx.fillStyle = '#8B7355';
+    ctx.fillRect(0, height, width, height);
+    ctx.restore();
+
+    const { drawContactShadows } = window.Renderer3D;
+
+    // Collect ALL triangles from buildings, walls, and streets for unified depth sorting
+    const allTriangles = [];
+
+    // console.log(`3D Render - Streets enabled: ${StateManager.showStreets}, Street count: ${scene.streets.length}`);
+    
+    // RENDER GROUND FIRST (not depth sorted, always in back, no culling)
+    if (scene.ground && scene.ground.mesh) {
+      ctx.fillStyle = scene.ground.color;
+      for (const face of scene.ground.mesh.faces) {
+        const pa = scene.ground.mesh.vertices[face[0]];
+        const pb = scene.ground.mesh.vertices[face[1]];
+        const pc = scene.ground.mesh.vertices[face[2]];
+        const ppa = this.camera3D.projectPoint(pa, width, height);
+        const ppb = this.camera3D.projectPoint(pb, width, height);
+        const ppc = this.camera3D.projectPoint(pc, width, height);
+        
+        // Skip triangles that are completely outside the view frustum
+        if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
+        
+        // Skip triangles completely behind the camera (but allow triangles that intersect near plane)
+        if (ppa.viewZ > 0 && ppb.viewZ > 0 && ppc.viewZ > 0) continue;
+        
+        // Skip back-facing triangles (simple backface culling)
+        const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
+        if (screenNormalZ <= 0) continue;
+        
+        // Render ground immediately
+        ctx.beginPath();
+        ctx.moveTo(ppa.x, ppa.y);
+        ctx.lineTo(ppb.x, ppb.y);
+        ctx.lineTo(ppc.x, ppc.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    if (StateManager.showStreets) {
+      // console.log(`Processing ${scene.streets.length} streets for 3D rendering`);
+      for (const street of scene.streets) {
+        if (!street.mesh || !street.mesh.faces || street.mesh.faces.length === 0) {
+          console.warn('Street has no mesh or faces:', street);
+          continue;
+        }
+        
+        for (const face of street.mesh.faces) {
+          const pa = street.mesh.vertices[face[0]];
+          const pb = street.mesh.vertices[face[1]];
+          const pc = street.mesh.vertices[face[2]];
+          
+          if (!pa || !pb || !pc) {
+            console.warn('Street face has missing vertices');
+            continue;
+          }
+          
+          const ppa = this.camera3D.projectPoint(pa, width, height);
+          const ppb = this.camera3D.projectPoint(pb, width, height);
+          const ppc = this.camera3D.projectPoint(pc, width, height);
+          
+          // Frustum culling - skip if completely outside view
+          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
+          
+          // Skip triangles behind the camera (near-plane clipping)
+          if (ppa.depth < -1 || ppb.depth < -1 || ppc.depth < -1) continue;
+          
+          // Backface culling
+          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
+          if (screenNormalZ <= 0) continue;
+          
+          // Calculate face normal for lighting
+          const v1 = pb.sub(pa);
+          const v2 = pc.sub(pa);
+          const normal = window.Renderer3D.Vec3.cross(v1, v2);
+          normal.normalize();
+          
+          // Lighting
+          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
+          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
+          const ambient = 0.3;
+          const diffuse = Math.max(0, sunDot);
+          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
+          
+          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
+          
+          allTriangles.push({
+            pa: ppa, pb: ppb, pc: ppc,
+            depth: avgDepth,
+            brightness: brightness,
+            color: street.color,
+            stroke: '#00000020'
+          });
+        }
+      }
+    }
+
+    if (StateManager.showBuildings) {
+      // Update slider max to actual building count
+      const buildingCountSlider = document.getElementById('building-count');
+      if (buildingCountSlider && parseInt(buildingCountSlider.max) !== scene.buildings.length) {
+        buildingCountSlider.max = scene.buildings.length;
+        buildingCountSlider.value = Math.min(StateManager.buildingCount, scene.buildings.length);
+        document.getElementById('building-count-value').textContent = 
+          buildingCountSlider.value === buildingCountSlider.max ? 'All' : buildingCountSlider.value;
+      }
+      
+      // Limit buildings based on slider count
+      const maxBuildings = Math.min(StateManager.buildingCount, scene.buildings.length);
+      const visibleBuildings = scene.buildings.slice(0, maxBuildings);
+      
+      // console.log(`Rendering ${visibleBuildings.length} of ${scene.buildings.length} buildings`);
+      
+      for (let i = 0; i < visibleBuildings.length; i++) {
+        const building = visibleBuildings[i];
+        
+        // if (i < 3) {
+        //   console.log(`Building ${i}: ${building.mesh.vertices.length} vertices, ${building.mesh.faces.length} faces, color: ${building.color}`);
+        // }
+        
+        // Project all triangles and add to global list
+        for (const face of building.mesh.faces) {
+          const pa = building.mesh.vertices[face[0]];
+          const pb = building.mesh.vertices[face[1]];
+          const pc = building.mesh.vertices[face[2]];
+          const ppa = this.camera3D.projectPoint(pa, width, height);
+          const ppb = this.camera3D.projectPoint(pb, width, height);
+          const ppc = this.camera3D.projectPoint(pc, width, height);
+          
+          // Frustum culling - skip if completely outside view
+          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
+          
+          // Skip triangles behind the camera (near-plane clipping)
+          if (ppa.depth < -1 || ppb.depth < -1 || ppc.depth < -1) continue;
+          
+          // Backface culling
+          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
+          if (screenNormalZ <= 0) continue;
+          
+          // Calculate face normal for lighting
+          const v1 = pb.sub(pa);
+          const v2 = pc.sub(pa);
+          const normal = window.Renderer3D.Vec3.cross(v1, v2);
+          normal.normalize();
+          
+          // Lighting
+          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
+          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
+          const ambient = 0.3;
+          const diffuse = Math.max(0, sunDot);
+          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
+          
+          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
+          
+          allTriangles.push({
+            pa: ppa, pb: ppb, pc: ppc,
+            depth: avgDepth,
+            brightness: brightness,
+            color: building.color,
+            stroke: StateManager.showCellOutlines ? '#000000' : 'transparent',
+            wardType: building.wardType,  // Track ward type for hover
+            height: building.height
+          });
+        }
+      }
+    }
+
+    if (StateManager.wallsNeeded) {
+      for (const wall of scene.walls) {
+        for (const face of wall.mesh.faces) {
+          const pa = wall.mesh.vertices[face[0]];
+          const pb = wall.mesh.vertices[face[1]];
+          const pc = wall.mesh.vertices[face[2]];
+          const ppa = this.camera3D.projectPoint(pa, width, height);
+          const ppb = this.camera3D.projectPoint(pb, width, height);
+          const ppc = this.camera3D.projectPoint(pc, width, height);
+          
+          // Frustum culling - skip if completely outside view
+          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
+          
+          // Skip triangles with ANY vertex too close to camera (view-space Z clipping)
+          if (ppa.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD || 
+              ppb.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD || 
+              ppc.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD) continue;
+          
+          // Backface culling
+          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
+          if (screenNormalZ <= 0) continue;
+          
+          // Calculate face normal for lighting
+          const v1 = pb.sub(pa);
+          const v2 = pc.sub(pa);
+          const normal = window.Renderer3D.Vec3.cross(v1, v2);
+          normal.normalize();
+          
+          // Lighting
+          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
+          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
+          const ambient = 0.3;
+          const diffuse = Math.max(0, sunDot);
+          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
+          
+          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
+          
+          allTriangles.push({
+            pa: ppa, pb: ppb, pc: ppc,
+            depth: avgDepth,
+            brightness: brightness,
+            color: wall.color,
+            stroke: '#00000060'
+          });
+        }
+      }
+    }
+
+    // Sort ALL triangles by depth (back to front) - ground already rendered separately
+    allTriangles.sort((a, b) => b.depth - a.depth);
+    
+    // Draw all triangles in sorted order
+    ctx.save();
+    for (const tri of allTriangles) {
+      if (!tri.pa.visible && !tri.pb.visible && !tri.pc.visible) continue;
+      
+      ctx.beginPath();
+      ctx.moveTo(tri.pa.x, tri.pa.y);
+      ctx.lineTo(tri.pb.x, tri.pb.y);
+      ctx.lineTo(tri.pc.x, tri.pc.y);
+      ctx.closePath();
+      
+      // Check if this triangle is hovered
+      const isHovered = this.lastHoveredBuilding && tri === this.lastHoveredBuilding;
+      
+      // Shade color (or use yellow if hovered)
+      let shadedColor;
+      if (isHovered) {
+        shadedColor = '#FFFF00'; // Bright yellow for hovered building
+      } else {
+        const hex = tri.color.replace('#', '');
+        let r = parseInt(hex.substr(0, 2), 16);
+        let g = parseInt(hex.substr(2, 2), 16);
+        let b = parseInt(hex.substr(4, 2), 16);
+        r = Math.floor(r * tri.brightness);
+        g = Math.floor(g * tri.brightness);
+        b = Math.floor(b * tri.brightness);
+        shadedColor = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+      }
+      
+      ctx.fillStyle = shadedColor;
+      ctx.fill();
+      
+      if (tri.stroke !== 'transparent' || isHovered) {
+        ctx.strokeStyle = isHovered ? '#000000' : tri.stroke;
+        ctx.lineWidth = isHovered ? 2 : 0.5;
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    
+    // Store rendered triangles for hover detection
+    this.lastRenderedTriangles = allTriangles;
+    
+    // Show ward name if hovering
+    if (this.hoveredWardType) {
+      this.showWardInfo(this.hoveredWardType);
+    } else {
+      this.hideWardInfo();
+    }
+  }
+
+  showWardInfo(wardType) {
+    let infoDiv = document.getElementById('ward-info');
+    if (!infoDiv) {
+      infoDiv = document.createElement('div');
+      infoDiv.id = 'ward-info';
+      infoDiv.style.position = 'fixed';
+      infoDiv.style.top = '10px';
+      infoDiv.style.right = '10px';
+      infoDiv.style.background = 'rgba(0,0,0,0.8)';
+      infoDiv.style.color = 'white';
+      infoDiv.style.padding = '10px';
+      infoDiv.style.borderRadius = '5px';
+      infoDiv.style.fontSize = '14px';
+      infoDiv.style.zIndex = '1000';
+      infoDiv.style.pointerEvents = 'none';
+      document.body.appendChild(infoDiv);
+    }
+    infoDiv.textContent = `Ward: ${wardType.charAt(0).toUpperCase() + wardType.slice(1)}`;
+    infoDiv.style.display = 'block';
+  }
+
+  hideWardInfo() {
+    const infoDiv = document.getElementById('ward-info');
+    if (infoDiv) {
+      infoDiv.style.display = 'none';
+    }
+  }
+
+
 }
 
 // ============================================================================
@@ -2568,6 +3399,10 @@ class BuildingPainter {
     // Convert back to hex
     return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
   }
+
+
+
+
 }
 
 class FarmPainter {
@@ -2791,13 +3626,14 @@ class PatchView {
     
     const showBuildings = options.showBuildings !== false;
     const showFarms = options.showFarms !== false;
+    const showCellOutlines = options.showCellOutlines || false;
     
     ctx.save();
     
     // Fill the patch with ward color
     ctx.fillStyle = patch.color || this.palette.light;
     ctx.strokeStyle = this.palette.dark;
-    ctx.lineWidth = 0.5;
+    ctx.lineWidth = showCellOutlines ? 0.5 : 0;
     
     ctx.beginPath();
     ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
@@ -2806,7 +3642,7 @@ class PatchView {
     }
     ctx.closePath();
     ctx.fill();
-    ctx.stroke();
+    if (showCellOutlines) ctx.stroke();
     
     // Draw buildings if this is a building ward
     if (showBuildings && patch.buildings && patch.buildings.length > 0) {
@@ -3420,6 +4256,13 @@ class StateManager {
   static showTrees = false; // Render trees in parks
   static cameraOffsetX = 0; // Camera pan X offset
   static cameraOffsetY = 0; // Camera pan Y offset
+  static view3D = false;     // Toggle between 2D and 3D rendering
+  static camera3DHeight = 80; // 3D camera height for overview
+  static camera3DFOV = 60;   // 3D camera field of view (degrees)
+  static camera3DAngle = 0;  // 3D camera rotation angle (radians)
+  static camera3DNear = 0.1; // 3D camera near clipping plane
+  static camera3DFar = 4000; // 3D camera far clipping plane
+  static buildingCount = 1000; // Number of buildings to render (1-1000)
 
   static pullParams() {
     const params = new URLSearchParams(window.location.search);
@@ -3500,11 +4343,56 @@ class TownGenerator {
     });
     
     this.canvas.addEventListener('mousemove', (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      const scaleX = this.canvas.width / rect.width;
+      const scaleY = this.canvas.height / rect.height;
+      const mouseX = (e.clientX - rect.left) * scaleX;
+      const mouseY = (e.clientY - rect.top) * scaleY;
+      
       if (this.isDragging) {
         const dx = e.clientX - this.dragStartX;
         const dy = e.clientY - this.dragStartY;
         StateManager.cameraOffsetX = this.dragStartOffsetX + dx;
         StateManager.cameraOffsetY = this.dragStartOffsetY + dy;
+        this.render();
+        return;
+      }
+      
+      // Check for hover in 3D view
+      if (!StateManager.view3D || !this.lastRenderedTriangles) return;
+      
+      // Find the topmost triangle under the mouse
+      let hoveredBuilding = null;
+      for (let i = this.lastRenderedTriangles.length - 1; i >= 0; i--) {
+        const tri = this.lastRenderedTriangles[i];
+        if (!tri.wardType) continue;
+        
+        // Point-in-triangle test
+        const pointInTriangle = (px, py, ax, ay, bx, by, cx, cy) => {
+          const v0x = cx - ax, v0y = cy - ay;
+          const v1x = bx - ax, v1y = by - ay;
+          const v2x = px - ax, v2y = py - ay;
+          const dot00 = v0x * v0x + v0y * v0y;
+          const dot01 = v0x * v1x + v0y * v1y;
+          const dot02 = v0x * v2x + v0y * v2y;
+          const dot11 = v1x * v1x + v1y * v1y;
+          const dot12 = v1x * v2x + v1y * v2y;
+          const invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
+          const u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+          const v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+          return (u >= 0) && (v >= 0) && (u + v <= 1);
+        };
+        
+        if (pointInTriangle(mouseX, mouseY, tri.pa.x, tri.pa.y, tri.pb.x, tri.pb.y, tri.pc.x, tri.pc.y)) {
+          hoveredBuilding = tri;
+          break;
+        }
+      }
+      
+      // If hover changed, store and re-render with yellow highlight
+      if (hoveredBuilding !== this.lastHoveredBuilding) {
+        this.lastHoveredBuilding = hoveredBuilding;
+        this.hoveredWardType = hoveredBuilding ? hoveredBuilding.wardType : null;
         this.render();
       }
     });

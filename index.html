@@ -33,6 +33,7 @@
     }
     .controls.collapsed {
       transform: translateX(-100%);
+
     }
     .export-float {
       position: fixed;
@@ -62,7 +63,7 @@
     .controls-toggle {
       position: absolute;
       top: 10px;
-      right: -30px;
+      right: -10px;
       width: 30px;
       height: 30px;
       background: rgba(255, 255, 255, 0.95);
@@ -78,6 +79,9 @@
     }
     .controls-toggle:hover {
       background: rgba(255, 255, 255, 1);
+    }
+    .edge-nudge{
+      right: -30px;
     }
     .controls h3 {
       margin: 0 0 10px 0;
@@ -150,6 +154,11 @@
   <div id="app">
     <div class="loading-message">Loading city generator…</div>
   </div>
+  <!-- LittleJS - Lightweight 2D/3D engine (~30KB) -->
+  <script src="https://cdn.jsdelivr.net/npm/littlejsengine@1.9.8/dist/littlejs.min.js"></script>
+  <script src="src/renderer3d_pure.js"></script>
+  <script src="src/wall_mesh_helper.js"></script>
+  <script src="src/building_mesh_helper.js"></script>
   <script src="src/towngenerator_new.js"></script>
   <script>
     (function () {
@@ -186,6 +195,7 @@
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
           '<label><input type="checkbox" id="view-architecture-check"> Use View Architecture</label>' +
           '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
+          '<label style="display:none;"><input type="checkbox" id="view-3d-check"> 3D View</label>' +
           '<label><input type="checkbox" id="show-trees-check"> Show Trees</label>' +
           '</div>' +
           '<div class="slider-grid">' +
@@ -205,6 +215,19 @@
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="5"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">30%</span><br>' +
           '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.3"></label>' +
+          '</div>' +
+          '<div id="camera-3d-controls" style="display:none;">' +
+          '<h4>3D Camera</h4>' +
+          '<div class="slider-grid">' +
+          '<label>Height: <span id="camera-height-value">2</span><br>' +
+          '<input type="range" id="camera-height" min="2" max="500" step="2" value="2"></label>' +
+          '<label>FOV: <span id="camera-fov-value">60°</span><br>' +
+          '<input type="range" id="camera-fov" min="30" max="120" step="5" value="60"></label>' +
+          '<label>Angle: <span id="camera-angle-value">0°</span><br>' +
+          '<input type="range" id="camera-angle" min="0" max="360" step="5" value="0"></label>' +
+          '<label>Building Count: <span id="building-count-value">All</span><br>' +
+          '<input type="range" id="building-count" min="1" max="1000" step="1" value="1000"></label>' +
+          '</div>' +
           '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
@@ -385,6 +408,16 @@
           generator.toggleFlythrough();
         });
         
+        document.getElementById('view-3d-check').addEventListener('change', function() {
+          StateManager.view3D = this.checked;
+          // Show/hide 3D camera controls
+          const controls3D = document.getElementById('camera-3d-controls');
+          if (controls3D) {
+            controls3D.style.display = this.checked ? 'block' : 'none';
+          }
+          generator.render();
+        });
+        
         document.getElementById('show-trees-check').addEventListener('change', function() {
           StateManager.showTrees = this.checked;
           generator.render();
@@ -396,15 +429,62 @@
         // Toggle controls collapse
         document.getElementById('toggle-controls').addEventListener('click', function() {
           const controls = document.querySelector('.controls');
+          const controlstoggle = document.getElementById('toggle-controls');
           const btn = this;
           if (controls.classList.contains('collapsed')) {
             controls.classList.remove('collapsed');
+            controlstoggle.classList.remove('edge-nudge')
             btn.textContent = '◀';
           } else {
             controls.classList.add('collapsed');
+            controlstoggle.classList.add('edge-nudge')
             btn.textContent = '▶';
           }
         });
+
+        // 3D camera controls
+        const cameraHeightSlider = document.getElementById('camera-height');
+        const cameraHeightValue = document.getElementById('camera-height-value');
+        const cameraFovSlider = document.getElementById('camera-fov');
+        const cameraFovValue = document.getElementById('camera-fov-value');
+        const cameraAngleSlider = document.getElementById('camera-angle');
+        const cameraAngleValue = document.getElementById('camera-angle-value');
+        const buildingCountSlider = document.getElementById('building-count');
+        const buildingCountValue = document.getElementById('building-count-value');
+
+        if (cameraHeightSlider) {
+          cameraHeightSlider.addEventListener('input', function() {
+            cameraHeightValue.textContent = cameraHeightSlider.value;
+            StateManager.camera3DHeight = parseFloat(cameraHeightSlider.value);
+            if (StateManager.view3D) generator.render();
+          });
+        }
+
+        if (cameraFovSlider) {
+          cameraFovSlider.addEventListener('input', function() {
+            cameraFovValue.textContent = cameraFovSlider.value + '°';
+            StateManager.camera3DFOV = parseFloat(cameraFovSlider.value);
+            if (StateManager.view3D) generator.render();
+          });
+        }
+
+        if (cameraAngleSlider) {
+          cameraAngleSlider.addEventListener('input', function() {
+            cameraAngleValue.textContent = cameraAngleSlider.value + '°';
+            StateManager.camera3DAngle = parseFloat(cameraAngleSlider.value) * Math.PI / 180;
+            if (StateManager.view3D) generator.render();
+          });
+        }
+
+        if (buildingCountSlider) {
+          // Update slider max based on actual building count
+          buildingCountSlider.addEventListener('input', function() {
+            StateManager.buildingCount = parseInt(buildingCountSlider.value);
+            const maxValue = parseInt(buildingCountSlider.max);
+            buildingCountValue.textContent = buildingCountSlider.value === buildingCountSlider.max ? 'All' : buildingCountSlider.value;
+            if (StateManager.view3D) generator.render();
+          });
+        }
 
         document.getElementById('regenerate-btn').addEventListener('click', function() {
           console.log('Regenerate button clicked');
