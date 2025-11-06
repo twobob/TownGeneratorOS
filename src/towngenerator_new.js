@@ -1761,9 +1761,15 @@ class CityRenderer {
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
     
-    // Create or update FormalMap
-    if (!this.formalMap) {
+    // Create or update FormalMap (recreate if settings changed)
+    if (!this.formalMap || this.settingsChanged()) {
+      console.log('[View Arch] Creating new FormalMap with gap:', cityData.settings.buildingGap);
       this.formalMap = new FormalMap(cityData, Palette);
+      this.lastSettings = {
+        streetWidth: StateManager.streetWidth,
+        buildingGap: StateManager.buildingGap,
+        wallThickness: StateManager.wallThickness
+      };
     }
     
     // Draw using view architecture
@@ -1824,8 +1830,9 @@ class CityRenderer {
       
       // Add buildings if ward has geometry
       if (patch.ward && patch.ward.geometry) {
+        // Store original building shapes (don't apply gap here - PatchView will do it)
         wardData.buildings = patch.ward.geometry.map(building => ({
-          shape: building,
+          shape: [...building.map(p => ({...p}))], // Deep copy to avoid mutations
           height: Random.float(8, 20),
           type: 'residential'
         }));
@@ -1885,8 +1892,33 @@ class CityRenderer {
     return {
       wards: wards,
       streets: streets,
-      walls: walls
+      walls: walls,
+      settings: {
+        streetWidth: (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0,
+        buildingGap: (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.8,
+        wallThickness: (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5
+      }
     };
+  }
+  
+  settingsChanged() {
+    if (!this.lastSettings) return true;
+    const changed = (
+      this.lastSettings.streetWidth !== StateManager.streetWidth ||
+      this.lastSettings.buildingGap !== StateManager.buildingGap ||
+      this.lastSettings.wallThickness !== StateManager.wallThickness
+    );
+    if (changed) {
+      console.log('[View Arch] Settings changed:', {
+        old: this.lastSettings,
+        new: {
+          streetWidth: StateManager.streetWidth,
+          buildingGap: StateManager.buildingGap,
+          wallThickness: StateManager.wallThickness
+        }
+      });
+    }
+    return changed;
   }
   
   generateWallTowers(wallPath) {
@@ -3615,9 +3647,10 @@ class FocusView {
  * Handles fill colors, patterns, and details for each ward type
  */
 class PatchView {
-  constructor(patch, palette) {
+  constructor(patch, palette, settings) {
     this.patch = patch;
     this.palette = palette;
+    this.settings = settings || { buildingGap: 1.8 };
   }
   
   draw(ctx, options = {}) {
@@ -3647,7 +3680,33 @@ class PatchView {
     // Draw buildings if this is a building ward
     if (showBuildings && patch.buildings && patch.buildings.length > 0) {
       const buildingShapes = patch.buildings.map(b => b.shape);
-      BuildingPainter.paint(ctx, buildingShapes, this.palette.roof, this.palette.dark, 0.5, 1);
+      
+      // Apply building gap by shrinking polygons
+      // IMPORTANT: Use !== undefined check because gap can be 0
+      const gap = (this.settings.buildingGap !== undefined) ? this.settings.buildingGap : 1.8;
+      console.log('[PatchView] Rendering buildings with gap:', gap, 'from settings:', this.settings.buildingGap, 'building count:', buildingShapes.length);
+      let processedBuildings;
+      if (gap > 0) {
+        processedBuildings = buildingShapes.map(building => {
+          if (!Array.isArray(building) || building.length === 0) return building;
+          
+          const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+          center.x /= building.length;
+          center.y /= building.length;
+          const shrinkFactor = 1 - (gap * 0.15);
+          return building.map(p => new Point(
+            center.x + (p.x - center.x) * shrinkFactor,
+            center.y + (p.y - center.y) * shrinkFactor
+          ));
+        }).filter(b => Array.isArray(b) && b.length > 0);
+      } else {
+        // Even at gap=0, create new Point instances to avoid any reference issues
+        processedBuildings = buildingShapes.map(building => 
+          building.map(p => new Point(p.x, p.y))
+        );
+      }
+      
+      BuildingPainter.paint(ctx, processedBuildings, this.palette.roof, this.palette.dark, 0.5, 1);
     }
     
     // Draw farm details if this is a farm
@@ -3694,9 +3753,10 @@ class PatchView {
  * RoadsView - renders roads and streets with smoothing and styling
  */
 class RoadsView {
-  constructor(roads, palette) {
+  constructor(roads, palette, settings) {
     this.roads = roads || [];
     this.palette = palette;
+    this.settings = settings || { streetWidth: 4.0 };
     this.smoothIterations = 2;
   }
   
@@ -3718,8 +3778,9 @@ class RoadsView {
   }
   
   drawRoadLayer(ctx, roads, isMajor) {
-    const width = isMajor ? 3 : 1.5;
-    const outlineWidth = isMajor ? 4.5 : 2.5;
+    const baseWidth = this.settings.streetWidth || 4.0;
+    const width = isMajor ? baseWidth * 0.75 : baseWidth * 0.375;
+    const outlineWidth = isMajor ? baseWidth * 1.125 : baseWidth * 0.625;
     
     // Draw outlines
     ctx.strokeStyle = this.palette.dark;
@@ -3793,9 +3854,10 @@ class RoadsView {
  * WallsView - renders city walls, towers, and gates
  */
 class WallsView {
-  constructor(walls, palette) {
+  constructor(walls, palette, settings) {
     this.walls = walls || [];
     this.palette = palette;
+    this.settings = settings || { wallThickness: 5 };
     this.towerSpacing = 30; // Distance between towers
     this.towerRadius = 4;
   }
@@ -3810,7 +3872,7 @@ class WallsView {
     
     // Draw wall segments
     ctx.strokeStyle = this.palette.dark;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = this.settings.wallThickness || 5;
     ctx.lineCap = 'square';
     ctx.lineJoin = 'miter';
     
@@ -3909,6 +3971,11 @@ class FormalMap {
   constructor(city, palette) {
     this.city = city;
     this.palette = palette;
+    this.settings = city.settings || {
+      streetWidth: 4.0,
+      buildingGap: 1.8,
+      wallThickness: 5
+    };
     this.patches = [];
     this.roads = null;
     this.walls = null;
@@ -3922,18 +3989,18 @@ class FormalMap {
     // Create patch views for all wards
     if (this.city.wards) {
       for (const ward of this.city.wards) {
-        this.patches.push(new PatchView(ward, this.palette));
+        this.patches.push(new PatchView(ward, this.palette, this.settings));
       }
     }
     
     // Create roads view
     if (this.city.streets) {
-      this.roads = new RoadsView(this.city.streets, this.palette);
+      this.roads = new RoadsView(this.city.streets, this.palette, this.settings);
     }
     
     // Create walls view
     if (this.city.walls) {
-      this.walls = new WallsView(this.city.walls, this.palette);
+      this.walls = new WallsView(this.city.walls, this.palette, this.settings);
     }
   }
   
