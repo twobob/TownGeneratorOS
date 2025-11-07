@@ -102,6 +102,9 @@
       gap: 8px;
       margin-bottom: 8px;
     }
+    .checkbox-grid.three-col {
+      grid-template-columns: repeat(3, 1fr);
+    }
     .checkbox-grid label {
       margin-bottom: 0;
     }
@@ -193,6 +196,7 @@
           '<label><input type="checkbox" id="cell-outlines-check"> Show Cell Outlines</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
+          '<label><input type="checkbox" id="show-water-check"> Show Water</label>' +
           '<label><input type="checkbox" id="view-architecture-check"> Use View Architecture</label>' +
           '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
           '<label style="display:none;"><input type="checkbox" id="view-3d-check"> 3D View</label>' +
@@ -228,6 +232,12 @@
           '<label>Building Count: <span id="building-count-value">All</span><br>' +
           '<input type="range" id="building-count" min="1" max="1000" step="1" value="1000"></label>' +
           '</div>' +
+          '</div>' +
+          '<h3>Water</h3>' +
+          '<div class="checkbox-grid three-col" id="water-grid">' +
+          '<label><input type="checkbox" id="river-check"> River</label>' +
+          '<label><input type="checkbox" id="canal-check"> Canal</label>' +
+          '<label><input type="checkbox" id="coast-check"> Coast</label>' +
           '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
@@ -422,6 +432,45 @@
           StateManager.showTrees = this.checked;
           generator.render();
         });
+        
+        document.getElementById('show-water-check').addEventListener('change', function() {
+          StateManager.showWater = this.checked;
+          generator.render();
+        });
+
+        // River and Canal checkboxes (independent, can both be on)
+        document.getElementById('river-check').addEventListener('change', function() {
+          StateManager.river = this.checked ? 1 : 0;
+          generator.generate();
+        });
+        
+        document.getElementById('canal-check').addEventListener('change', function() {
+          StateManager.canal = this.checked ? 1 : 0;
+          generator.generate();
+        });
+        
+        // Coast checkbox
+        document.getElementById('coast-check').addEventListener('change', function() {
+          StateManager.coast = this.checked ? 1 : 0;
+          generator.generate();
+        });
+
+        // Sync initial UI state from StateManager after pullParams
+        const syncCheckbox = (id, value) => {
+          const el = document.getElementById(id); if (el) el.checked = !!value;
+        };
+        syncCheckbox('plaza-check', StateManager.plazaNeeded);
+        syncCheckbox('citadel-check', StateManager.citadelNeeded);
+        syncCheckbox('walls-check', StateManager.wallsNeeded);
+        syncCheckbox('labels-check', StateManager.showLabels);
+        syncCheckbox('cell-outlines-check', StateManager.showCellOutlines);
+        syncCheckbox('buildings-check', StateManager.showBuildings);
+        syncCheckbox('streets-check', StateManager.showStreets);
+        syncCheckbox('show-water-check', StateManager.showWater);
+        syncCheckbox('show-trees-check', StateManager.showTrees);
+        syncCheckbox('river-check', StateManager.river === 1);
+        syncCheckbox('canal-check', StateManager.canal === 1);
+        syncCheckbox('coast-check', StateManager.coast === 1);
 
         // Make generator globally accessible for flythrough
         window.generator = generator;

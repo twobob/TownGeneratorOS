@@ -63,11 +63,21 @@ class Point {
     this.y = y;
   }
 
-  get length() {
+  length() {
     return Math.sqrt(this.x * this.x + this.y * this.y);
   }
 
-  static distance(p1, p2) {
+  subtract(other) {
+    return new Point(this.x - other.x, this.y - other.y);
+  }
+
+  static distance(p1, p2, caller = 'unknown') {
+    if (!p1 || !p2 || p1.x === undefined || p1.y === undefined || p2.x === undefined || p2.y === undefined) {
+      // Report the error loudly with context so it can be fixed
+      console.error(`[Point.distance] Invalid points from ${caller}:`, p1, p2);
+      // Still return a value so upstream logic can continue while issue is investigated
+      return Infinity;
+    }
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
     return Math.sqrt(dx * dx + dy * dy);
@@ -87,6 +97,55 @@ class Point {
       p1.x + (p2.x - p1.x) * t,
       p1.y + (p2.y - p1.y) * t
     );
+  }
+}
+
+// Arc generation utility
+class ArcGenerator {
+  // Find circle passing through 3 points
+  static getCircle(p0, v0, p1, v1) {
+    // p0, p1 are points, v0, v1 are direction vectors from those points
+    // Returns {c: center, r: radius} or null
+    const dx1 = v0.x, dy1 = v0.y;
+    const dx2 = v1.x, dy2 = v1.y;
+    
+    const denom = dx1 * dy2 - dy1 * dx2;
+    if (Math.abs(denom) < 0.0001) return null; // Parallel
+    
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    
+    const t = (dx * dy2 - dy * dx2) / denom;
+    
+    const cx = p0.x + dx1 * t;
+    const cy = p0.y + dy1 * t;
+    const r = Math.sqrt((cx - p0.x) ** 2 + (cy - p0.y) ** 2);
+    
+    return {c: new Point(cx, cy), r: r};
+  }
+  
+  // Generate arc points
+  static getArc(circle, startAngle, endAngle, minSegmentLength) {
+    if (!circle || circle.r < 0.001) return null;
+    
+    // Ensure we go the short way around
+    let delta = endAngle - startAngle;
+    if (delta > Math.PI) delta -= 2 * Math.PI;
+    if (delta < -Math.PI) delta += 2 * Math.PI;
+    
+    const arcLength = Math.abs(delta * circle.r);
+    const segments = Math.max(2, Math.ceil(arcLength / minSegmentLength));
+    
+    const points = [];
+    for (let i = 0; i <= segments; i++) {
+      const angle = startAngle + delta * i / segments;
+      points.push(new Point(
+        circle.c.x + circle.r * Math.cos(angle),
+        circle.c.y + circle.r * Math.sin(angle)
+      ));
+    }
+    
+    return points;
   }
 }
 
@@ -294,6 +353,119 @@ class Voronoi {
 }
 
 class Polygon {
+  // Calculate oriented bounding box (OBB) - returns 4 corners [p0, p1, p2, p3]
+  static obb(polygon) {
+    if (polygon.length < 3) return null;
+    
+    // Find convex hull first for better OBB
+    const hull = Polygon.convexHull(polygon);
+    
+    let minArea = Infinity;
+    let bestBox = null;
+    
+    // Try each edge of the hull as a potential OBB side
+    for (let i = 0; i < hull.length; i++) {
+      const p1 = hull[i];
+      const p2 = hull[(i + 1) % hull.length];
+      
+      // Edge vector
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.001) continue;
+      
+      // Normalized edge direction
+      const ux = dx / len;
+      const uy = dy / len;
+      
+      // Perpendicular direction
+      const vx = -uy;
+      const vy = ux;
+      
+      // Project all points onto both axes
+      let minU = Infinity, maxU = -Infinity;
+      let minV = Infinity, maxV = -Infinity;
+      
+      for (const p of polygon) {
+        const u = (p.x - p1.x) * ux + (p.y - p1.y) * uy;
+        const v = (p.x - p1.x) * vx + (p.y - p1.y) * vy;
+        
+        minU = Math.min(minU, u);
+        maxU = Math.max(maxU, u);
+        minV = Math.min(minV, v);
+        maxV = Math.max(maxV, v);
+      }
+      
+      const area = (maxU - minU) * (maxV - minV);
+      
+      if (area < minArea) {
+        minArea = area;
+        // Reconstruct box corners
+        const corner = new Point(p1.x + minU * ux + minV * vx, p1.y + minU * uy + minV * vy);
+        bestBox = [
+          corner,
+          new Point(corner.x + (maxU - minU) * ux, corner.y + (maxU - minU) * uy),
+          new Point(corner.x + (maxU - minU) * ux + (maxV - minV) * vx, corner.y + (maxU - minU) * uy + (maxV - minV) * vy),
+          new Point(corner.x + (maxV - minV) * vx, corner.y + (maxV - minV) * vy)
+        ];
+      }
+    }
+    
+    return bestBox;
+  }
+  
+  // Convex hull using Graham scan
+  static convexHull(points) {
+    if (points.length < 3) return points.slice();
+    
+    // Find bottom-most point (or leftmost if tie)
+    let start = points[0];
+    for (const p of points) {
+      if (p.y < start.y || (p.y === start.y && p.x < start.x)) {
+        start = p;
+      }
+    }
+    
+    // Sort by polar angle
+    const sorted = points.slice().sort((a, b) => {
+      if (a === start) return -1;
+      if (b === start) return 1;
+      
+      const dx1 = a.x - start.x, dy1 = a.y - start.y;
+      const dx2 = b.x - start.x, dy2 = b.y - start.y;
+      
+      const cross = dx1 * dy2 - dy1 * dx2;
+      if (cross !== 0) return cross > 0 ? -1 : 1;
+      
+      // Collinear - closer point first
+      return (dx1 * dx1 + dy1 * dy1) - (dx2 * dx2 + dy2 * dy2);
+    });
+    
+    const hull = [sorted[0], sorted[1]];
+    
+    for (let i = 2; i < sorted.length; i++) {
+      let top = hull[hull.length - 1];
+      let nextTop = hull[hull.length - 2];
+      
+      while (hull.length > 1) {
+        const dx1 = top.x - nextTop.x;
+        const dy1 = top.y - nextTop.y;
+        const dx2 = sorted[i].x - top.x;
+        const dy2 = sorted[i].y - top.y;
+        
+        if (dx1 * dy2 - dy1 * dx2 > 0) break;
+        
+        hull.pop();
+        top = hull[hull.length - 1];
+        nextTop = hull[hull.length - 2];
+      }
+      
+      hull.push(sorted[i]);
+    }
+    
+    return hull;
+  }
+  
   static distance(poly, point) {
     if (poly.length === 0) return Infinity;
     let minDist = Infinity;
@@ -319,6 +491,194 @@ class Polygon {
     center.y /= polygon.length;
     return center;
   }
+  
+  /**
+   * Laplacian smoothing for closed polygons
+   * Each vertex is averaged with its neighbors, except those in excludePoints
+   * @param {Point[]} polygon - The polygon to smooth
+   * @param {Point[]} excludePoints - Points to keep fixed (gates, etc)
+   * @param {number} iterations - Number of smoothing passes
+   * @returns {Point[]} Smoothed polygon
+   */
+  static smooth(polygon, excludePoints = null, iterations = 1) {
+    if (!polygon || polygon.length < 3) return polygon;
+    
+    let result = polygon.slice();
+    const len = result.length;
+    
+    for (let iter = 0; iter < iterations; iter++) {
+      const smoothed = [];
+      
+      for (let i = 0; i < len; i++) {
+        const curr = result[i];
+        
+        // Check if this point should be excluded from smoothing
+        if (excludePoints && excludePoints.some(p => 
+          Math.abs(p.x - curr.x) < 0.01 && Math.abs(p.y - curr.y) < 0.01
+        )) {
+          smoothed.push(curr);
+        } else {
+          // Average with neighbors
+          const prev = result[(i + len - 1) % len];
+          const next = result[(i + 1) % len];
+          const avgX = (prev.x + next.x) / 2;
+          const avgY = (prev.y + next.y) / 2;
+          
+          // Lerp between current and average (0.5 blend)
+          smoothed.push(new Point(
+            curr.x + (avgX - curr.x) * 0.5,
+            curr.y + (avgY - curr.y) * 0.5
+          ));
+        }
+      }
+      
+      result = smoothed;
+    }
+    
+    return result;
+  }
+  
+  /**
+   * Laplacian smoothing for open polylines
+   * @param {Point[]} polyline - The polyline to smooth
+   * @param {Point[]} excludePoints - Points to keep fixed
+   * @param {number} iterations - Number of smoothing passes
+   * @returns {Point[]} Smoothed polyline
+   */
+  static smoothOpen(polyline, excludePoints = null, iterations = 1) {
+    if (!polyline || polyline.length < 3) return polyline;
+    
+    let result = polyline.slice();
+    const len = result.length;
+    
+    for (let iter = 0; iter < iterations; iter++) {
+      const smoothed = [];
+      
+      for (let i = 0; i < len; i++) {
+        const curr = result[i];
+        
+        // Always keep endpoints
+        if (i === 0 || i === len - 1) {
+          smoothed.push(curr);
+          continue;
+        }
+        
+        // Check if this point should be excluded from smoothing
+        if (excludePoints && excludePoints.some(p => 
+          Math.abs(p.x - curr.x) < 0.01 && Math.abs(p.y - curr.y) < 0.01
+        )) {
+          smoothed.push(curr);
+        } else {
+          // Average with neighbors
+          const prev = result[i - 1];
+          const next = result[i + 1];
+          const avgX = (prev.x + next.x) / 2;
+          const avgY = (prev.y + next.y) / 2;
+          
+          // Lerp between current and average
+          smoothed.push(new Point(
+            curr.x + (avgX - curr.x) * 0.5,
+            curr.y + (avgY - curr.y) * 0.5
+          ));
+        }
+      }
+      
+      result = smoothed;
+    }
+    
+    return result;
+  }
+}
+
+// ============================================================================
+// DCEL (Doubly Connected Edge List) - lightweight topology for per-edge data
+
+// Edge type flags to drive insetting around walls/roads/water
+const EdgeType = {
+  INNER: 0,
+  WALL: 1,
+  ROAD: 2,
+  WATER: 3,
+  BRIDGE: 4,
+};
+
+class DCELVertex {
+  constructor(point) {
+    this.p = point;         // Point
+    this.halfEdge = null;   // One of outgoing half-edges
+  }
+}
+
+class DCELHalfEdge {
+  constructor() {
+    this.origin = null; // DCELVertex
+    this.twin = null;   // DCELHalfEdge
+    this.next = null;   // DCELHalfEdge
+    this.prev = null;   // DCELHalfEdge
+    this.face = null;   // DCELFace
+    this.data = EdgeType.INNER; // classification (WALL/ROAD/WATER/INNER)
+  }
+
+  midpoint() {
+    const a = this.origin.p;
+    const b = this.next ? this.next.origin.p : a;
+    return new Point((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+  }
+
+  asSegment() {
+    const a = this.origin.p;
+    const b = this.next ? this.next.origin.p : a;
+    return [a, b];
+  }
+}
+
+class DCELFace {
+  constructor(id) {
+    this.id = id;
+    this.edge = null;  // one half-edge on the boundary
+    this.patch = null; // back reference to Patch
+  }
+
+  // Iterate boundary half-edges once (assumes simple polygon)
+  edges() {
+    const result = [];
+    if (!this.edge) return result;
+    let e = this.edge;
+    const start = e;
+    do {
+      result.push(e);
+      e = e.next;
+    } while (e && e !== start);
+    return result;
+  }
+
+  // Return ordered vertices aligned to edges
+  loop() {
+    return this.edges().map(e => ({ v: e.origin.p, e }));
+  }
+}
+
+// Geometry helpers for intersections
+function segmentIntersectsSegment(a, b, c, d) {
+  const o = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const onSeg = (p, q, r) => Math.min(p.x, r.x) - 1e-6 <= q.x && q.x <= Math.max(p.x, r.x) + 1e-6 &&
+                              Math.min(p.y, r.y) - 1e-6 <= q.y && q.y <= Math.max(p.y, r.y) + 1e-6;
+  const o1 = o(a, b, c), o2 = o(a, b, d), o3 = o(c, d, a), o4 = o(c, d, b);
+  if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true;
+  if (Math.abs(o1) < 1e-6 && onSeg(a, c, b)) return true;
+  if (Math.abs(o2) < 1e-6 && onSeg(a, d, b)) return true;
+  if (Math.abs(o3) < 1e-6 && onSeg(c, a, d)) return true;
+  if (Math.abs(o4) < 1e-6 && onSeg(c, b, d)) return true;
+  return false;
+}
+
+function segmentIntersectsPolygon(a, b, poly) {
+  for (let i = 0; i < poly.length; i++) {
+    const c = poly[i];
+    const d = poly[(i + 1) % poly.length];
+    if (segmentIntersectsSegment(a, b, c, d)) return true;
+  }
+  return false;
 }
 
 // ============================================================================
@@ -330,7 +690,9 @@ class Patch {
     this.shape = shape;
     this.withinCity = false;
     this.withinWalls = false;
+    this.waterbody = false;  // New property for water features
     this.ward = null;
+    this.face = null;        // DCELFace reference (built after Voronoi)
   }
 
   static fromRegion(region) {
@@ -349,19 +711,391 @@ class Ward {
     this.wardType = wardType;
   }
 
+  /**
+   * Calculate available building area, insetting from walls and water
+   */
+  getAvailable() {
+    const shape = this.patch.shape;
+    const n = shape.length;
+
+    const streetWidth = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+    const wallThickness = (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5.0;
+    const buildingGap = (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.8;
+
+    // If we have a DCEL face, compute exact per-edge insets from edge types
+    if (this.patch.face && this.patch.face.edge) {
+      const loop = this.patch.face.loop();
+      const edgeInsets = new Array(loop.length);
+      const vertexRadii = new Array(loop.length).fill(0);
+
+      for (let i = 0; i < loop.length; i++) {
+        const e = loop[i].e;
+        let inset = Math.max(0.6, buildingGap * 0.5);
+        if (e.data === EdgeType.WALL) {
+          inset = Math.max(inset, wallThickness / 2 + 1.2);
+        } else if (e.data === EdgeType.ROAD || e.data === EdgeType.BRIDGE) {
+          inset = Math.max(inset, streetWidth / 2 + buildingGap);
+        } else if (e.data === EdgeType.WATER) {
+          inset = Math.max(inset, wallThickness + 1.2);
+        }
+        edgeInsets[i] = inset;
+      }
+
+      // Vertex radii: round off tower corners where both incident edges are walls
+      for (let i = 0; i < loop.length; i++) {
+        const prevE = loop[(i + loop.length - 1) % loop.length].e;
+        const currE = loop[i].e;
+        let r = 0;
+        if (prevE.data === EdgeType.WALL && currE.data === EdgeType.WALL) {
+          r = Math.max(r, wallThickness / 2 + 1.2);
+        }
+        // Slight rounding near a gate point
+        if (Array.isArray(this.model.gates)) {
+          const v = loop[i].v;
+          for (const g of this.model.gates) {
+            if (Point.distance(v, g) < wallThickness) { r = Math.max(r, wallThickness * 0.4); break; }
+          }
+        }
+        vertexRadii[i] = r;
+      }
+
+      let insetShape = this.insetWithVertexRadii(loop.map(x => x.v), edgeInsets, vertexRadii);
+      // Hard constrain to interior of city walls 
+      if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
+        insetShape = this.clipInside(insetShape, this.model.borderShape);
+      }
+      // Subtract water polygons from available area so no geometry is placed over water
+      if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+        for (const water of this.model.waterBodies) {
+          if (water && water.length >= 3) {
+            insetShape = this.clipOutside(insetShape, water);
+          }
+        }
+      }
+      return insetShape;
+    }
+
+    // Fallback to legacy heuristic if DCEL is not available
+    const vertexRadii = new Array(n).fill(0);
+    const edgeInsets = new Array(n).fill(Math.max(0.6, buildingGap * 0.5));
+
+    for (let i = 0; i < n; i++) {
+      const a = shape[i];
+      const b = shape[(i + 1) % n];
+      let isWall = false;
+      if (this.model.wallEdges) {
+        for (const [w1, w2] of this.model.wallEdges) {
+          const m1 = (Point.distance(a, w1) < 0.1 && Point.distance(b, w2) < 0.1);
+          const m2 = (Point.distance(a, w2) < 0.1 && Point.distance(b, w1) < 0.1);
+          if (m1 || m2) { isWall = true; break; }
+        }
+      }
+      if (isWall) edgeInsets[i] = Math.max(edgeInsets[i], wallThickness / 2 + 1.2);
+    }
+
+    let result = this.insetWithVertexRadii(shape, edgeInsets, vertexRadii);
+    if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
+      result = this.clipInside(result, this.model.borderShape);
+    }
+    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      for (const water of this.model.waterBodies) {
+        if (water && water.length >= 3) {
+          result = this.clipOutside(result, water);
+        }
+      }
+    }
+    return result;
+  }
+  
+  /**
+   * Inset polygon with vertex radii handling
+   * @param {Array} polygon - The polygon vertices
+   * @param {Array} edgeInsets - Inset distance for each edge
+   * @param {Array} vertexRadii - Radius for circular cutout at each vertex
+   */
+  insetWithVertexRadii(polygon, edgeInsets, vertexRadii) {
+    // Step 1: Basic edge-based inset using simpleInset algorithm
+    let result = this.insetPolygon(polygon, edgeInsets);
+    
+    if (!result || result.length < 3) {
+      return null;
+    }
+    
+    // Step 2: Cut out circles at vertices where radius exceeds adjacent edge insets
+    const n = polygon.length;
+    for (let i = 0; i < n; i++) {
+      const radius = vertexRadii[i];
+      const prevEdgeInset = edgeInsets[(i + n - 1) % n];
+      const currEdgeInset = edgeInsets[i];
+      
+      // Only cut out circle if vertex radius exceeds BOTH adjacent edge insets
+      if (radius > prevEdgeInset && radius > currEdgeInset) {
+        const vertex = polygon[i];
+        
+        // Create circle approximation (9-sided polygon)
+
+        const circle = this.createRegularPolygon(9, radius, vertex);
+        
+        // Subtract circle from result (boolean AND with inverted circle)
+        const cutResult = this.subtractPolygon(result, circle);
+        
+        if (cutResult && cutResult.length >= 3) {
+          result = cutResult;
+        }
+      }
+    }
+    
+    return result;
+  }
+  
+  /**
+   * Basic edge-based polygon insetting
+
+   */
+  insetPolygon(polygon, edgeInsets) {
+    const n = polygon.length;
+    if (n < 3) return polygon.slice();
+
+    // Determine polygon orientation (positive = CCW)
+    let area2 = 0;
+    for (let i = 0; i < n; i++) {
+      const a = polygon[i];
+      const b = polygon[(i + 1) % n];
+      area2 += a.x * b.y - b.x * a.y;
+    }
+    const ccw = area2 > 0;
+
+    const result = [];
+    for (let i = 0; i < n; i++) {
+      const pPrev = polygon[(i + n - 1) % n];
+      const pCurr = polygon[i];
+      const pNext = polygon[(i + 1) % n];
+
+      const insetPrev = edgeInsets[(i + n - 1) % n];
+      const insetCurr = edgeInsets[i];
+
+      // Edge directions
+      let e1x = pCurr.x - pPrev.x, e1y = pCurr.y - pPrev.y;
+      let e2x = pNext.x - pCurr.x, e2y = pNext.y - pCurr.y;
+      const e1len = Math.hypot(e1x, e1y) || 1e-6;
+      const e2len = Math.hypot(e2x, e2y) || 1e-6;
+      e1x /= e1len; e1y /= e1len; e2x /= e2len; e2y /= e2len;
+
+      // Inward normals depend on orientation
+      const n1x = ccw ? -e1y : e1y;
+      const n1y = ccw ?  e1x : -e1x;
+      const n2x = ccw ? -e2y : e2y;
+      const n2y = ccw ?  e2x : -e2x;
+
+      // Offset lines parallel to edges
+      const q1x = pCurr.x + n1x * insetPrev;
+      const q1y = pCurr.y + n1y * insetPrev;
+      const q2x = pCurr.x + n2x * insetCurr;
+      const q2y = pCurr.y + n2y * insetCurr;
+
+      // Intersect (q1 + t1*e1) with (q2 + t2*e2)
+      const det = e1x * (-e2y) - e1y * (-e2x); // e1 x (-e2)
+      if (Math.abs(det) < 1e-6) {
+        // Parallel; advance slightly along bisector as fallback
+        const bx = (n1x + n2x) * 0.5, by = (n1y + n2y) * 0.5;
+        result.push(new Point(pCurr.x + bx * Math.max(insetPrev, insetCurr), pCurr.y + by * Math.max(insetPrev, insetCurr)));
+        continue;
+      }
+      // Solve q1 + t1*e1 = q2 + t2*e2  =>  t1 = ((q2-q1) x (-e2)) / (e1 x (-e2))
+      const dx = q2x - q1x, dy = q2y - q1y;
+      const num = dx * (-e2y) - dy * (-e2x);
+      const t1 = num / det;
+      const ix = q1x + e1x * t1;
+      const iy = q1y + e1y * t1;
+      result.push(new Point(ix, iy));
+    }
+    return result;
+  }
+
+  // Clip polygon to another polygon (keep INSIDE of clip), Sutherland–Hodgman
+  clipInside(polygon, clipPoly) {
+    if (!polygon || polygon.length < 3) return polygon;
+    if (!clipPoly || clipPoly.length < 3) return polygon;
+
+    const isLeft = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    const intersect = (a, b, c, d) => {
+      const r = { x: b.x - a.x, y: b.y - a.y };
+      const s = { x: d.x - c.x, y: d.y - c.y };
+      const denom = r.x * s.y - r.y * s.x;
+      if (Math.abs(denom) < 1e-8) return b; // parallel fallback
+      const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+      return new Point(a.x + t * r.x, a.y + t * r.y);
+    };
+
+    let output = polygon.slice();
+    for (let i = 0; i < clipPoly.length; i++) {
+      const A = clipPoly[i];
+      const B = clipPoly[(i + 1) % clipPoly.length];
+      const input = output;
+      output = [];
+      if (input.length === 0) break;
+      for (let j = 0; j < input.length; j++) {
+        const P = input[j];
+        const Q = input[(j + 1) % input.length];
+        const Pside = isLeft(A, B, P);
+        const Qside = isLeft(A, B, Q);
+        const Pin = Pside >= 0;
+        const Qin = Qside >= 0;
+        if (Pin && Qin) {
+          output.push(Q);
+        } else if (Pin && !Qin) {
+          output.push(intersect(P, Q, A, B));
+        } else if (!Pin && Qin) {
+          output.push(intersect(P, Q, A, B));
+          output.push(Q);
+        }
+      }
+    }
+    return output.length >= 3 ? output : polygon;
+  }
+
+  // Clip polygon to the OUTSIDE of clipPoly (subtract clipPoly)
+  clipOutside(polygon, clipPoly) {
+    return this.subtractPolygon(polygon, clipPoly);
+  }
+  
+  /**
+   * Create a regular polygon (circle approximation)
+   */
+  createRegularPolygon(sides, radius, center) {
+    const polygon = [];
+    for (let i = 0; i < sides; i++) {
+      const angle = (i / sides) * Math.PI * 2;
+      polygon.push(new Point(
+        center.x + Math.cos(angle) * radius,
+        center.y + Math.sin(angle) * radius
+      ));
+    }
+    return polygon;
+  }
+  
+  /**
+   * Subtract one polygon from another (simple vertex filtering for circles)
+   * Implements Sutherland–Hodgman style clipping that keeps the area OUTSIDE
+   * the convex 'circle' polygon (which is a regular n-gon approximation).
+   */
+  subtractPolygon(polygon, circle) {
+    if (!polygon || polygon.length < 3) return polygon;
+    if (!circle || circle.length < 3) return polygon;
+
+    // Determine orientation of the circle polygon (assumed CCW)
+    let area2 = 0;
+    for (let i = 0; i < circle.length; i++) {
+      const a = circle[i];
+      const b = circle[(i + 1) % circle.length];
+      area2 += a.x * b.y - b.x * a.y;
+    }
+    const ccw = area2 > 0;
+
+    const isLeft = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    const intersect = (a, b, c, d) => {
+      // line ab with cd
+      const r = { x: b.x - a.x, y: b.y - a.y };
+      const s = { x: d.x - c.x, y: d.y - c.y };
+      const denom = r.x * s.y - r.y * s.x;
+      if (Math.abs(denom) < 1e-8) return b; // parallel fallback
+      const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+      return new Point(a.x + t * r.x, a.y + t * r.y);
+    };
+
+    let output = polygon.slice();
+    // For outside-clip we keep points that are NOT inside each edge half-plane
+    for (let i = 0; i < circle.length; i++) {
+      const A = circle[i];
+      const B = circle[(i + 1) % circle.length];
+      const input = output;
+      output = [];
+      if (input.length === 0) break;
+      for (let j = 0; j < input.length; j++) {
+        const P = input[j];
+        const Q = input[(j + 1) % input.length];
+        const Pside = isLeft(A, B, P);
+        const Qside = isLeft(A, B, Q);
+        // For CCW clip polygon, inside is left (>=0). We want OUTSIDE.
+        const Pin = ccw ? Pside <= 0 : Pside >= 0;
+        const Qin = ccw ? Qside <= 0 : Qside >= 0;
+        if (Pin && Qin) {
+          // both outside -> keep Q only
+          output.push(Q);
+        } else if (Pin && !Qin) {
+          // leaving outside -> add intersection
+          output.push(intersect(P, Q, A, B));
+        } else if (!Pin && Qin) {
+          // entering outside -> add intersection+Q
+          output.push(intersect(P, Q, A, B));
+          output.push(Q);
+        } else {
+          // both inside (of clip polygon) -> keep nothing
+        }
+      }
+    }
+    return output.length >= 3 ? output : polygon;
+  }
+
   buildGeometry() {
+    const availableShape = this.getAvailable();
+    
+    if (!availableShape || availableShape.length < 3) {
+      console.warn('Ward.buildGeometry: Invalid availableShape, using original patch shape');
+      this.geometry = [];
+      return;
+    }
+    
+    // Store the inset shape for rendering ward backgrounds
+    this.availableShape = availableShape;
+    
+    // If this patch borders roads, create a thin ring of buildings hugging the road first
+    let roadBuildings = [];
+    if (this.patch.face && this.patch.face.edge) {
+      const loop = this.patch.face.loop();
+      const streetWidth = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+      const buildingDepth = 6.0; // average building depth toward interior
+      for (let i = 0; i < loop.length; i++) {
+        const e = loop[i].e; if (e.data !== EdgeType.ROAD) continue;
+        const a = loop[i].v, b = loop[(i+1)%loop.length].v;
+        const dx = b.x - a.x, dy = b.y - a.y; const len = Math.hypot(dx,dy)||1e-6; const nx = -dy/len, ny = dx/len;
+        const gap = (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.8;
+        const inset = streetWidth/2 + gap; // start line just inside the street
+        const stripOut = inset + 0.5; // outer edge of strip (near street)
+        const stripIn = inset + buildingDepth; // inner edge toward interior
+        const p1 = new Point(a.x + nx*stripOut, a.y + ny*stripOut);
+        const p2 = new Point(b.x + nx*stripOut, b.y + ny*stripOut);
+        const p3 = new Point(b.x + nx*stripIn, b.y + ny*stripIn);
+        const p4 = new Point(a.x + nx*stripIn, a.y + ny*stripIn);
+        // Chop the strip into row buildings along the edge
+        const target = 5.5; // target facade width
+        const count = Math.max(1, Math.floor(len/target));
+        for (let k=0;k<count;k++){
+          const t0=k/count, t1=(k+1)/count;
+          const s1 = new Point(p1.x + (p2.x-p1.x)*t0, p1.y + (p2.y-p1.y)*t0);
+          const s2 = new Point(p1.x + (p2.x-p1.x)*t1, p1.y + (p2.y-p1.y)*t1);
+          const s3 = new Point(p4.x + (p3.x-p4.x)*t1, p4.y + (p3.y-p4.y)*t1);
+          const s4 = new Point(p4.x + (p3.x-p4.x)*t0, p4.y + (p3.y-p4.y)*t0);
+          roadBuildings.push([s1,s2,s3,s4]);
+        }
+      }
+    }
+    // Leave road-edge buildings intact; the renderer will clip visuals against water
+
     // Recursively subdivide ward into building plots (like original Haxe)
-    const minSq = 20;
-    const gridChaos = this.model.gridChaos || 0.2;
-    const sizeChaos = this.model.sizeChaos || 0.3;
+    const lots = StateManager.lotsMode === true;
+    const minSq = lots ? 12 : 20;
+    const gridChaos = lots ? 0.1 : (this.model.gridChaos || 0.2);
+    const sizeChaos = lots ? 0.15 : (this.model.sizeChaos || 0.3);
     
     // Random chance to create an open piazza instead of buildings
-    if (Random.chance(StateManager.plazaChance)) {
+    if (!lots && Random.chance(StateManager.plazaChance)) {
       // Create piazza with buildings around perimeter and empty center
-      this.geometry = this.createPiazza(this.shape);
+      this.geometry = this.createPiazza(availableShape);
     } else {
       // Normal ward with buildings
-      this.geometry = this.createAlleys(this.shape, minSq, gridChaos, sizeChaos, true);
+      const innerBuildings = this.createAlleys(availableShape, minSq, gridChaos, sizeChaos, true);
+      this.geometry = roadBuildings.length ? roadBuildings.concat(innerBuildings) : innerBuildings;
     }
   }
 
@@ -436,7 +1170,12 @@ class Ward {
     return buildings;
   }
 
-  createAlleys(polygon, minSq, gridChaos, sizeChaos, split) {
+  createAlleys(polygon, minSq, gridChaos, sizeChaos, split, depth = 0) {
+    const maxDepth = StateManager.lotsMode ? 12 : 10;
+    const area0 = this.polygonArea(polygon);
+    if (!polygon || polygon.length < 3 || area0 <= 0.001 || depth >= maxDepth) {
+      return area0 > 0 ? [polygon] : [];
+    }
     // Find longest edge
     let longestIdx = 0;
     let maxLength = 0;
@@ -481,6 +1220,16 @@ class Ward {
     const cutP2 = new Point(splitX + perpX * 1000, splitY + perpY * 1000);
     
     const halves = this.cutPolygon(polygon, cutP1, cutP2, alleyWidth);
+    // If cut failed (returned one half equal to original), avoid infinite recursion
+    if (!halves || halves.length < 2) {
+      // If we cannot split, either accept as building or stop
+      if (area0 < minSq) return [polygon];
+      // As a fallback, shrink slightly and accept
+      const center = polygon.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+      center.x/=polygon.length; center.y/=polygon.length;
+      const shrunk = polygon.map(p=>new Point(center.x+(p.x-center.x)*0.98, center.y+(p.y-center.y)*0.98));
+      return [shrunk];
+    }
     
     const buildings = [];
     for (const half of halves) {
@@ -488,13 +1237,18 @@ class Ward {
       const sizeVariation = Math.pow(2, 4 * sizeChaos * (Random.float() - 0.5));
       if (area < minSq * sizeVariation) {
         // Small enough - make it a building (skip some for empty lots)
-        if (Random.float() > 0.04) {
+        const skipChance = StateManager.lotsMode ? 0.0 : 0.04;
+        if (Random.float() > skipChance) {
           buildings.push(half);
         }
       } else {
         // Keep subdividing
-        const shouldSplit = area > minSq / (Random.float() * Random.float());
-        buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, shouldSplit));
+        const shouldSplit = StateManager.lotsMode ? (area > minSq * 1.25) : (area > minSq / (Random.float() * Random.float()));
+        if (shouldSplit) {
+          buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, shouldSplit, depth + 1));
+        } else {
+          buildings.push(half);
+        }
       }
     }
     
@@ -827,38 +1581,27 @@ class Park extends Ward {
   }
   
   spawnTrees() {
-    // Lazy tree generation using MFCG algorithm
+    // Lazy tree generation using Poisson-disk sampling
     if (this.trees !== null) return this.trees;
-    
     this.trees = [];
-    if (!this.shape || this.shape.length < 3) return this.trees;
-    
-    // Use Poisson disk sampling to fill the park area with tree positions
-    // Greenery density for parks (higher than regular wards)
-    const greeneryDensity = 0.7; // Parks are ~70% filled with trees
-    
-    // Fill the available area (shape) with points using pattern
-    const points = this.fillAreaWithPattern(this.shape);
-    
-    // Filter points using noise and density
+    const poly = (this.availableShape && this.availableShape.length>=3) ? this.availableShape : this.shape;
+    if (!poly || poly.length < 3) return this.trees;
+    const baseSpacing = 2.6; // slightly tighter than global
+    const densityFn = (p)=>{
+      // Parks: modulate lightly with noise for clumps
+      const n = (PerlinNoise.noise(p.x * 0.08, p.y * 0.08) + 1) * 0.5; // 0..1
+      return baseSpacing * (0.8 + 0.6 * n);
+    };
+    const points = CityRenderer.poissonSample(poly, densityFn, 25);
     for (const point of points) {
-      // Use Perlin noise to create natural-looking tree distribution
-      const noiseValue = (PerlinNoise.noise(point.x * 0.05, point.y * 0.05) + 1) / 2;
-      if (noiseValue < greeneryDensity) {
-        // Create tree with crown polygon like MFCG
-        this.trees.push({
-          pos: point,
-          crown: this.getTreeCrown()
-        });
-      }
+      this.trees.push({ pos: point, crown: this.getTreeCrown() });
     }
-    
     return this.trees;
   }
   
   fillAreaWithPattern(polygon) {
     // Simplified Poisson disk sampling for polygon
-    // MFCG uses distance ~2.25 units between points
+    //
     const spacing = 3.0;
     const points = [];
     
@@ -890,7 +1633,7 @@ class Park extends Ward {
   }
   
   getTreeCrown() {
-    // Generate a random tree crown polygon (MFCG implementation)
+    // Generate a random tree crown polygon
     // Random radius variation: 1.5 * pow(1.5, gaussian(-1 to 1))
     const r1 = Random.float();
     const r2 = Random.float();
@@ -991,10 +1734,22 @@ class Farm extends Ward {
     this.furrows = [];
     this.buildings = [];
     
+    // Subtract water from farm area so no geometry ends up over water
+    let land = this.shape;
+    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      for (const w of this.model.waterBodies) {
+        if (w && w.length >= 3) {
+          const clipped = this.subtractPolygon(land, w);
+          if (clipped && clipped.length >= 3) land = clipped;
+        }
+      }
+    }
+    this.availableShape = land;
+    
     // Small farmhouse building
-    const center = this.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-    center.x /= this.shape.length;
-    center.y /= this.shape.length;
+    const center = land.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= land.length;
+    center.y /= land.length;
     
     // Random vertex for positioning
     const randomVertex = this.shape[Random.int(0, this.shape.length)];
@@ -1013,15 +1768,36 @@ class Farm extends Ward {
       new Point(pos.x + cos * size - sin * size, pos.y + sin * size + cos * size)
     ];
     
-    this.buildings = [housing];
-    this.geometry = [housing];
+    // Clip housing against water-removed land polygon
+    let housingClipped = housing;
+    if (land && land.length >= 3) {
+      // Ensure house stays within land bounds by intersecting via clipInside semantics
+      // Reuse subtractPolygon by subtracting outside-of-land via iterative edge clipping
+      // Here simply discard if centroid not inside land
+      const inside = (pt, poly)=>{
+        let inside=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+          const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+          const inter=((yi>pt.y)!=(yj>pt.y)) && (pt.x < (xj-xi)*(pt.y-yi)/(yj-yi)+xi); if(inter) inside=!inside;
+        }
+        return inside;
+      };
+      const hc = {x:(housing[0].x+housing[1].x+housing[2].x+housing[3].x)/4,y:(housing[0].y+housing[1].y+housing[2].y+housing[3].y)/4};
+      if (!inside(hc, land)) {
+        // Move housing towards center
+        const dx=center.x-hc.x, dy=center.y-hc.y; housingClipped = housing.map(p=>new Point(p.x+dx*0.5, p.y+dy*0.5));
+      }
+    }
+    this.buildings = [housingClipped];
+    this.geometry = [housingClipped];
     
     // Create subplot (the whole farm field)
-    this.subPlots = [this.shape];
+    this.subPlots = [land];
     
     // Generate furrows (plowed lines) across the farm
     if (Random.chance(0.7)) { // 70% chance of furrows
-      const bounds = this.getBounds();
+      const bounds = (function(poly){
+        let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity; for(const p of poly){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);} return {x:minX,y:minY,width:maxX-minX,height:maxY-minY};
+      })(land);
       const furrowSpacing = 2 + Random.float() * 2;
       const furrowAngle = Random.float() * Math.PI;
       
@@ -1086,10 +1862,19 @@ class CityModel {
     this.alleyWidth = StateManager.alleyWidth;
     this.buildingGap = StateManager.buildingGap;
     
+    // Water generation - URL overrides if provided
+    // coast: 1 forces coast, 0 disables, otherwise ~40% chance
+    this.coastNeeded = (StateManager.coast === 1) ? true : (StateManager.coast === 0 ? false : Random.chance(0.4));
+    // Support dual river+canal mode
+    this.riverType = StateManager.riverType || 'none';
+    this.riverNeeded = StateManager.river === 1;
+    this.canalNeeded = StateManager.canal === 1;
+    
     this.patches = [];
     this.inner = [];
     this.streets = [];
     this.gates = [];
+    this.bridges = [];
     
     try {
       this.build();
@@ -1103,9 +1888,34 @@ class CityModel {
   build() {
     this.buildPatches();
     this.buildWalls();
+    // Build DCEL after walls are finalized so edge types use final membership
+    this.buildDCEL();
+    // Optional river and/or canal (can have both)
+    if (this.riverNeeded) {
+      this.riverType = 'river';
+      this.buildRiver();
+    }
+    if (this.canalNeeded) {
+      this.riverType = 'canal';
+      this.buildRiver();
+    }
+    // Restore combined type for rendering
+    if (this.riverNeeded && this.canalNeeded) {
+      this.riverType = 'both';
+    } else if (this.riverNeeded) {
+      this.riverType = 'river';
+    } else if (this.canalNeeded) {
+      this.riverType = 'canal';
+    }
+    // Water affects edge topology; tag edges that cross water as WATER
+    if (this.riverNeeded || this.canalNeeded) {
+      this.markWaterEdgesFromBodies();
+    }
     this.buildStreets();
     this.createWards();
     this.buildGeometry();
+    // Add exterior, road-hugging settlements outside the walls
+    this.buildOutsideSettlements();
   }
 
   buildPatches() {
@@ -1139,15 +1949,43 @@ class CityModel {
     
     const regions = voronoi.partitioning();
     
-    let count = 0;
+    // Create patches from regions
     for (const r of regions) {
       const patch = Patch.fromRegion(r);
       this.patches.push(patch);
+    }
+    
+    // Calculate initial city radius for water generation
+    let tempRadius = 0;
+    for (let i = 0; i < Math.min(this.nPatches, this.patches.length); i++) {
+      const patch = this.patches[i];
+      for (const p of patch.shape) {
+        const d = p.length();
+        if (d > tempRadius) tempRadius = d;
+      }
+    }
+    this.cityRadius = tempRadius;
+    
+    // Mark waterbody cells BEFORE city assignment
+    if (this.coastNeeded) {
+      this.markWaterCells();
+    }
+    
+    const waterCount = this.patches.filter(p => p.waterbody).length;
+    console.log('Water marking: coastNeeded=', this.coastNeeded, 'total patches=', this.patches.length, 'waterbodies=', waterCount);
+    
+    // Now assign city roles to patches (excluding waterbodies)
+    let count = 0;
+    for (const patch of this.patches) {
+      // Skip waterbody patches for city roles
+      if (patch.waterbody) continue;
       
       if (count === 0) {
-        this.center = patch.shape.reduce((min, p) => 
-          p.length < min.length ? p : min
-        );
+        this.center = patch.shape.reduce((min, p) => {
+          const minDist = min.x * min.x + min.y * min.y;
+          const pDist = p.x * p.x + p.y * p.y;
+          return pDist < minDist ? p : min;
+        });
         
         if (this.plazaNeeded) {
           this.plaza = patch;
@@ -1166,11 +2004,283 @@ class CityModel {
       count++;
     }
     
+    // Recalculate city radius from actual inner patches
     this.cityRadius = 0;
     for (const patch of this.inner) {
       for (const p of patch.shape) {
-        const d = p.length;
+        const d = p.length();
         if (d > this.cityRadius) this.cityRadius = d;
+      }
+    }
+    
+    // Extract water body polygons from waterbody cells for rendering
+    this.extractWaterBodies();
+
+    // DCEL will be built after patches are known and withinCity flags set
+  }
+
+  // --- DCEL construction & edge tagging ---
+  buildDCEL() {
+    // Build a DCEL face for each patch and half-edges for its boundary
+    const roundKey = (p) => `${Math.round(p.x * 1e3)}/${Math.round(p.y * 1e3)}`;
+    const segKey = (a, b) => `${roundKey(a)}->${roundKey(b)}`;
+    const vertexMap = new Map();
+    const getVertex = (p) => {
+      const k = roundKey(p);
+      let v = vertexMap.get(k);
+      if (!v) { v = new DCELVertex(p); vertexMap.set(k, v); }
+      return v;
+    };
+
+    const edgeMap = new Map(); // map of reversed keys to half-edge for twin linking
+    let faceId = 0;
+    this.faces = [];
+
+    for (const patch of this.patches) {
+      const face = new DCELFace(faceId++);
+      face.patch = patch;
+      patch.face = face;
+
+      const pts = patch.shape;
+      const n = pts.length;
+      let firstEdge = null;
+      let prev = null;
+
+      for (let i = 0; i < n; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        const he = new DCELHalfEdge();
+        he.origin = getVertex(a);
+        he.face = face;
+        if (!firstEdge) firstEdge = he;
+        if (prev) { prev.next = he; he.prev = prev; }
+
+        // twin linking
+        const kFwd = segKey(a, b);
+        const kRev = segKey(b, a);
+        const rev = edgeMap.get(kFwd); // if an opposite was stored earlier
+        if (rev) {
+          he.twin = rev; rev.twin = he;
+          edgeMap.delete(kFwd);
+        } else {
+          edgeMap.set(kRev, he);
+        }
+
+        prev = he;
+      }
+
+      // close the loop
+      if (prev && firstEdge) { prev.next = firstEdge; firstEdge.prev = prev; }
+      face.edge = firstEdge;
+      this.faces.push(face);
+    }
+
+    // Tag WALL/WATER edges using membership of neighboring faces
+    const innerSet = new Set(this.patches.filter(p => p.withinCity).map(p => p.face));
+    const waterSet = new Set(this.patches.filter(p => p.waterbody).map(p => p.face));
+    for (const face of this.faces) {
+      for (const e of face.edges()) {
+        const twinFace = e.twin ? e.twin.face : null;
+        if (!innerSet.has(face)) continue; // only care for city cells
+        if (!twinFace || !innerSet.has(twinFace)) {
+          e.data = EdgeType.WALL; // city boundary
+        } else if (waterSet.has(twinFace)) {
+          e.data = EdgeType.WATER;
+        }
+      }
+    }
+
+    // Further mark WATER edges by checking intersection with explicit water polygons (coast or rivers)
+    this.markWaterEdgesFromBodies();
+  }
+
+  // Tag DCEL edges as WATER if they intersect any polygon in this.waterBodies
+  markWaterEdgesFromBodies() {
+    if (!this.waterBodies || this.waterBodies.length === 0 || !this.faces) return;
+    for (const face of this.faces) {
+      if (!face.patch || !face.patch.withinCity) continue;
+      for (const e of face.edges()) {
+        if (e.data === EdgeType.WALL) continue; // keep boundary type
+        const [a, b] = e.asSegment();
+        for (const poly of this.waterBodies) {
+          if (segmentIntersectsPolygon(a, b, poly)) {
+            e.data = EdgeType.WATER;
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  /**
+   * Mark cells as waterbodies using Perlin noise and distance field
+   * 
+   */
+  markWaterCells() {
+    // Simple fractal noise function
+    const noise = (x, y) => {
+      let value = 0;
+      let amplitude = 1;
+      let frequency = 1;
+      
+      for (let i = 0; i < 4; i++) {
+        const nx = x * frequency;
+        const ny = y * frequency;
+        
+        // Simple pseudo-random noise based on position
+        const n = Math.sin(nx * 12.9898 + ny * 78.233) * 43758.5453;
+        value += (n - Math.floor(n)) * amplitude;
+        
+        amplitude *= 0.5;
+        frequency *= 2;
+      }
+      
+      return value;
+    };
+    
+    const bounds = this.cityRadius * 1.5;
+    
+    // Random rotation for water orientation
+    const angle = Random.float() * Math.PI * 2;
+    const cos_a = Math.cos(angle);
+    const sin_a = Math.sin(angle);
+    
+    // Vary coastline size dramatically: small (1-2 patches) to huge (8-15+ patches)
+    // Use power distribution to favor variety: small, medium, large, and occasional HUGE
+    const sizeRoll = Random.float();
+    let waterRadius;
+    if (sizeRoll < 0.3) {
+      // Small: 1-3 patches
+      waterRadius = this.cityRadius * (0.15 + Random.float() * 0.25);
+    } else if (sizeRoll < 0.6) {
+      // Medium: 3-6 patches
+      waterRadius = this.cityRadius * (0.4 + Random.float() * 0.3);
+    } else if (sizeRoll < 0.85) {
+      // Large: 6-10 patches
+      waterRadius = this.cityRadius * (0.7 + Random.float() * 0.4);
+    } else {
+      // HUGE: 10-20+ patches (massive coastline)
+      waterRadius = this.cityRadius * (1.1 + Random.float() * 0.6);
+    }
+    
+    const waterOffsetDist = this.cityRadius * (0.3 + Random.float() * 0.4);
+    const waterCenter = new Point(
+      Math.cos(angle) * waterOffsetDist,
+      Math.sin(angle) * waterOffsetDist
+    );
+    
+    // Mark cells as waterbodies based on distance and noise
+    for (const patch of this.patches) {
+      const center = Polygon.centroid(patch.shape);
+      
+      // Rotate point
+      const rotated = new Point(
+        center.x * cos_a - center.y * sin_a,
+        center.y * cos_a + center.x * sin_a
+      );
+      
+      // Distance from water center
+      let dist = Point.distance(waterCenter, rotated) - waterRadius;
+      
+      // Adjust for elliptical shape (wider on x if rotated.x > waterCenter.x)
+      if (rotated.x > waterCenter.x) {
+        dist = Math.min(dist, Math.abs(rotated.y - waterCenter.y) - waterRadius);
+      }
+      
+      // Add noise perturbation for organic edges
+      const noiseScale = (rotated.x + bounds) / (2 * bounds);
+      const noiseValue = noise(noiseScale, (rotated.y + bounds) / (2 * bounds));
+      const noisePerturbation = noiseValue * waterRadius * Math.sqrt(rotated.length() / bounds);
+      
+      // Mark as waterbody if within perturbed distance
+      if (dist + noisePerturbation < 0) {
+        patch.waterbody = true;
+      }
+    }
+  }
+  
+  /**
+   * Extract water body polygons from waterbody cells
+   * Creates the circumference of all connected waterbody cells
+   */
+  extractWaterBodies() {
+    this.waterBodies = [];
+    this.waterBodyTypes = [];
+    
+    if (!this.coastNeeded) return;
+    
+    // Find all waterbody patches
+    const waterPatches = this.patches.filter(p => p.waterbody);
+    if (waterPatches.length === 0) return;
+    
+    // Find outer edges of water region (edges not shared with other water cells)
+    const waterEdges = [];
+    
+    for (const patch of waterPatches) {
+      for (let i = 0; i < patch.shape.length; i++) {
+        const a = patch.shape[i];
+        const b = patch.shape[(i + 1) % patch.shape.length];
+        
+        // Check if this edge is shared with another waterbody patch
+        let isShared = false;
+        for (const otherPatch of waterPatches) {
+          if (otherPatch === patch) continue;
+          
+          // Check if the reverse edge exists in other patch
+          if (Polygon.findEdge(otherPatch.shape, b, a) !== -1) {
+            isShared = true;
+            break;
+          }
+        }
+        
+        if (!isShared) {
+          waterEdges.push({a, b});
+        }
+      }
+    }
+    
+    // Chain edges together to form water boundary polygon(s)
+    if (waterEdges.length > 0) {
+      const waterPoly = [];
+      const used = new Set();
+      let current = waterEdges[0];
+      let index = 0;
+      used.add(index);
+      
+      waterPoly.push(current.a);
+      
+      // Chain edges
+      let iterations = 0;
+      const maxIterations = waterEdges.length + 10;
+      
+      while (iterations < maxIterations) {
+        waterPoly.push(current.b);
+        
+        // Find next edge that starts where this one ends
+        let found = false;
+        for (let i = 0; i < waterEdges.length; i++) {
+          if (used.has(i)) continue;
+          
+          const edge = waterEdges[i];
+          if (Point.distance(current.b, edge.a) < 0.1) {
+            current = edge;
+            index = i;
+            used.add(i);
+            found = true;
+            break;
+          }
+        }
+        
+        if (!found || Point.distance(current.b, waterPoly[0]) < 0.1) break;
+        iterations++;
+      }
+      
+      if (waterPoly.length >= 3) {
+        // Heavily smooth coastline to remove ALL sharp Voronoi corners (6-8 passes for very organic look)
+        const smoothPasses = 6 + Random.int(0, 3);
+        const smoothedCoast = Polygon.smooth(waterPoly, null, smoothPasses);
+        this.waterBodies.push(smoothedCoast);
+        this.waterBodyTypes.push('coast');
       }
     }
   }
@@ -1191,6 +2301,25 @@ class CityModel {
     return inside;
   }
 
+  getPolygonCenter(polygon) {
+    let cx = 0, cy = 0;
+    for (const p of polygon) {
+      cx += p.x;
+      cy += p.y;
+    }
+    return new Point(cx / polygon.length, cy / polygon.length);
+  }
+  
+  getPolygonRadius(polygon) {
+    const center = this.getPolygonCenter(polygon);
+    let maxDist = 0;
+    for (const p of polygon) {
+      const dist = Point.distance(p, center, 'getPolygonRadius');
+      if (dist > maxDist) maxDist = dist;
+    }
+    return maxDist;
+  }
+
   buildWalls() {
     if (this.inner.length === 0) {
       this.borderShape = [];
@@ -1199,6 +2328,8 @@ class CityModel {
     
     if (this.inner.length === 1) {
       this.borderShape = [...this.inner[0].shape];
+      // Filter out any invalid vertices
+      this.borderShape = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
       return;
     }
     
@@ -1245,44 +2376,206 @@ class CityModel {
       } while (index !== 0 && index !== -1 && iterations < maxIterations);
     }
     
-    // Mark patches where MAJORITY of vertices are inside the wall
-    for (const patch of this.patches) {
-      if (!patch.withinCity && this.borderShape.length > 0) {
-        let verticesInside = 0;
-        for (const vertex of patch.shape) {
-          if (this.isPointInPolygon(vertex, this.borderShape)) {
-            verticesInside++;
-          }
-        }
-        if (verticesInside >= patch.shape.length / 2) {
-          patch.withinCity = true;
-        }
+    // Recompute city membership robustly: centroid-inside test
+    if (this.borderShape.length > 0) {
+      // Ensure border has only valid points
+      this.borderShape = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
+      for (const patch of this.patches) {
+        const centroid = Polygon.centroid(patch.shape);
+        patch.withinCity = this.isPointInPolygon(centroid, this.borderShape) && !patch.waterbody;
       }
+      // Refresh inner list
+      this.inner = this.patches.filter(p => p.withinCity);
     }
     
     // Generate gates
     if (this.wallsNeeded && this.borderShape.length > 0) {
       const numGates = 2 + Random.int(0, 3);
+      const validBorder = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
       for (let i = 0; i < numGates; i++) {
-        const idx = Random.int(0, this.borderShape.length);
-        this.gates.push(this.borderShape[idx]);
+        if (validBorder.length === 0) break;
+        const idx = Random.int(0, validBorder.length);
+        this.gates.push(validBorder[idx]);
+      }
+      
+      // Apply smoothing to wall shape, preserving gate positions AND water edge vertices
+      const excludePoints = [...this.gates];
+      
+      // Add water edge vertices to exclusion list 
+      if (this.waterBodies && this.waterBodies.length > 0) {
+        for (const waterBody of this.waterBodies) {
+          for (const point of waterBody) {
+            excludePoints.push(point);
+          }
+        }
+      }
+      
+      this.borderShape = Polygon.smooth(this.borderShape, excludePoints, 3);
+      // Post-smooth validation
+      this.borderShape = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
+      // Keep gates valid too
+      this.gates = this.gates.filter(g => g && g.x !== undefined && g.y !== undefined);
+    }
+    
+    // Store wall edges as pairs of consecutive vertices
+    // This allows wards to identify which edges are wall edges
+    this.wallEdges = [];
+    for (let i = 0; i < this.borderShape.length; i++) {
+      const v1 = this.borderShape[i];
+      const v2 = this.borderShape[(i + 1) % this.borderShape.length];
+      this.wallEdges.push([v1, v2]);
+    }
+    
+    // Filter patches to reasonable radius - keep patches within 3x city radius
+    const radius = this.cityRadius;
+    const maxDist = radius * 3;
+    console.log('Filtering patches: this.center=', this.center, 'radius=', radius, 'maxDist=', maxDist);
+    this.patches = this.patches.filter(p => {
+      const patchCenter = Polygon.centroid(p.shape);
+      const dist = Point.distance(patchCenter, this.center, 'buildWalls/radiusFilter');
+      return dist < maxDist;
+    });
+    
+    console.log('After radius filter: patches=', this.patches.length);
+  }
+
+  // Build a river/canal polygon crossing the city; add to waterBodies/waterBodyTypes
+  buildRiver() {
+    // Create a path across ENTIRE map canvas, not just city limits
+    // Use a large multiplier to ensure river extends beyond any reasonable viewport
+    const R = this.cityRadius * 6.0; // Span entire map area
+    const angle = Random.float() * Math.PI; // random orientation
+    const dir = new Point(Math.cos(angle), Math.sin(angle));
+    const start = new Point(dir.x * -R, dir.y * -R);
+    const end = new Point(dir.x * R, dir.y * R);
+
+    let path = [];
+    if (this.riverType === 'canal') {
+      // Mostly straight canal with slight jitter near center
+      const offset = (Random.float() - 0.5) * this.cityRadius * 0.1;
+      const ortho = new Point(-dir.y, dir.x);
+      const mid1 = new Point(start.x + (end.x - start.x) * 0.33 + ortho.x * offset, start.y + (end.y - start.y) * 0.33 + ortho.y * offset);
+      const mid2 = new Point(start.x + (end.x - start.x) * 0.66 - ortho.x * offset, start.y + (end.y - start.y) * 0.66 - ortho.y * offset);
+      path = [start, mid1, mid2, end];
+    } else {
+      // VERY BENDY meandering river: Many segments with aggressive multi-frequency sinusoidal lateral offsets
+      const segments = 24; // More segments = more curves
+      const ortho = new Point(-dir.y, dir.x);
+      const amp = this.cityRadius * 0.25; // Much larger amplitude for dramatic bends
+      const meanderIntensity = StateManager.riverMeander || 0.5; // 0-1 scale
+      
+      // Value noise for micro-meanders (seeded pseudo-random)
+      const valueNoise = (x) => {
+        const n = Math.sin(x * 127.1 + Random.seed * 0.0001) * Math.cos(x * 311.7 + Random.seed * 0.0002);
+        return (n - Math.floor(n)) - 0.5; // -0.5 to 0.5
+      };
+      
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const baseX = start.x + (end.x - start.x) * t;
+        const baseY = start.y + (end.y - start.y) * t;
+        // Multi-frequency sine waves with MUCH MORE aggressive bending
+        const sineWobble = amp * (
+          Math.sin(t * Math.PI * 3.5) * 1.0 +          // Primary meander
+          Math.sin(t * Math.PI * 6.2 + 1.3) * 0.6 +    // Secondary curves
+          Math.sin(t * Math.PI * 1.8 + 2.7) * 0.8      // Tertiary variation
+        ) * (0.5 + 0.5 * Math.sin(t * Math.PI));       // Modulation envelope
+        
+        // Micro-meanders: layered value noise at different scales
+        const microMeander = meanderIntensity * amp * 0.3 * (
+          valueNoise(t * 15.7) * 0.6 +                 // Fine detail
+          valueNoise(t * 8.3 + 2.1) * 0.4 +            // Medium detail
+          valueNoise(t * 4.1 + 4.7) * 0.3              // Coarse oxbow swells
+        );
+        
+        const wobble = sineWobble + microMeander;
+        path.push(new Point(baseX + ortho.x * wobble, baseY + ortho.y * wobble));
+      }
+      // Smooth path multiple times for natural curves (open polyline)
+      path = Polygon.smoothOpen(path, null, 2);
+    }
+    
+    // Safety check
+    if (!path || path.length < 2) {
+      console.error('River path generation failed');
+      return;
+    }
+
+    // Thicken path into a polygon strip
+    const baseW = this.riverType === 'canal' ? Math.max(8, StateManager.streetWidth * 2) : Math.max(10, StateManager.streetWidth * 3);
+    const left = [];
+    const right = [];
+    // Precompute width noise phases for coherent variation
+    const phase1 = Random.float() * Math.PI * 2;
+    const phase2 = Random.float() * Math.PI * 2;
+    const phase3 = Random.float() * Math.PI * 2;
+    
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i];
+      const b = path[i + 1];
+      // Comprehensive null/undefined checks
+      if (!a || !b || a.x === undefined || a.y === undefined || b.x === undefined || b.y === undefined) {
+        console.warn('Invalid path point at index', i, 'a:', a, 'b:', b);
+        continue;
+      }
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1e-6;
+      const nx = -dy / len, ny = dx / len; // left normal
+      // Width varies strongly along a natural river; canals stay uniform
+      const t = i / Math.max(1, path.length - 1);
+      let vary = 1;
+      if (this.riverType !== 'canal') {
+        // Multi-frequency width noise with stronger amplitude
+        const n = (
+          0.9 +
+          0.6 * Math.sin(t * Math.PI * 4.2 + phase1) +
+          0.35 * Math.sin(t * Math.PI * 8.7 + phase2) +
+          0.25 * Math.sin(t * Math.PI * 13.1 + phase3)
+        );
+        
+        // Value noise for oxbow swell width balloons
+        const meanderIntensity = StateManager.riverMeander || 0.5;
+        const valueNoise = (x) => {
+          const n = Math.sin(x * 127.1 + Random.seed * 0.0001) * Math.cos(x * 311.7 + Random.seed * 0.0002);
+          return (n - Math.floor(n)) - 0.5; // -0.5 to 0.5
+        };
+        const widthSwell = meanderIntensity * 0.4 * (
+          valueNoise(t * 6.3 + 1.2) +                  // Occasional wide pools
+          valueNoise(t * 11.7 + 3.8) * 0.5             // Finer width variation
+        );
+        
+        vary = Math.max(0.5, n + widthSwell); // keep from collapsing too thin
+      }
+      // Taper towards ends (ease in/out) for rivers to avoid hard cut at map edge
+      const taper = (this.riverType === 'canal') ? 1 : Math.max(0.25, Math.sin(Math.PI * t));
+      const width = baseW * vary * taper;
+      left.push(new Point(a.x + nx * width, a.y + ny * width));
+      right.push(new Point(a.x - nx * width, a.y - ny * width));
+      if (i === path.length - 2) {
+        left.push(new Point(b.x + nx * width, b.y + ny * width));
+        right.push(new Point(b.x - nx * width, b.y - ny * width));
       }
     }
     
-    // Filter patches to reasonable radius
-    const radius = this.cityRadius;
-    this.patches = this.patches.filter(p => {
-      return Polygon.distance(p.shape, this.center) < radius * 3;
-    });
+    // Ensure we have valid polygons
+    if (left.length < 2 || right.length < 2) {
+      console.error('Failed to generate river polygon - insufficient points');
+      return;
+    }
+    
+    let waterPoly = [...left, ...right.reverse()];
+
+    if (!this.waterBodies) this.waterBodies = [];
+    if (!this.waterBodyTypes) this.waterBodyTypes = [];
+    // Heavily smooth for very organic look without ANY sharp corners (5-7 passes for rivers, 2 for canals)
+    const smoothPasses = this.riverType === 'canal' ? 2 : (5 + Random.int(0, 3));
+    const result = Polygon.smooth(waterPoly, null, smoothPasses);
+    this.waterBodies.push(result);
+    this.waterBodyTypes.push(this.riverType);
   }
 
   buildStreets() {
-    // console.log('buildStreets() called');
-    // console.log('Gates:', this.gates ? this.gates.length : 0);
-    // console.log('Plaza:', this.plaza ? 'exists' : 'none');
-    // console.log('Border shape:', this.borderShape ? this.borderShape.length : 0);
-    
-    // Build topology graph for pathfinding
+    // Build topology graph for pathfinding - ONLY from non-waterbody patches
     const topology = this.buildTopology();
     
     // Determine street target based on what's available
@@ -1299,13 +2592,15 @@ class CityModel {
       
       // Collect all vertices from topology that are closest to center
       for (const vertex of topology.keys()) {
-        targetVertices.push(vertex);
+        if (vertex && vertex.x !== undefined && vertex.y !== undefined) {
+          targetVertices.push(vertex);
+        }
       }
       
       // Sort by distance to center and take closest ones
       targetVertices.sort((a, b) => {
-        const distA = Point.distance(a, center);
-        const distB = Point.distance(b, center);
+        const distA = Point.distance(a, center, 'buildStreets/sortA');
+        const distB = Point.distance(b, center, 'buildStreets/sortB');
         return distA - distB;
       });
       
@@ -1332,10 +2627,10 @@ class CityModel {
       const snappedGates = [];
       for (const virtualGate of gatePoints) {
         let nearest = this.borderShape[0];
-        let minDist = Point.distance(virtualGate, nearest);
+        let minDist = Point.distance(virtualGate, nearest, 'buildStreets/snapVirtual/minInit');
         
         for (const borderVertex of this.borderShape) {
-          const dist = Point.distance(virtualGate, borderVertex);
+          const dist = Point.distance(virtualGate, borderVertex, 'buildStreets/snapVirtual/scan');
           if (dist < minDist) {
             minDist = dist;
             nearest = borderVertex;
@@ -1356,11 +2651,13 @@ class CityModel {
     
     // Find nearest target vertex for each gate
     for (const gate of gatePoints) {
-      let nearestTarget = null;
+      if (!gate || gate.x === undefined || gate.y === undefined) continue;
+        let nearestTarget = null;
       let minDist = Infinity;
       
       for (const vertex of targetVertices) {
-        const dist = Point.distance(gate, vertex);
+        if (!vertex || vertex.x === undefined || vertex.y === undefined) continue;
+        const dist = Point.distance(gate, vertex, 'buildStreets/nearestTarget');
         if (dist < minDist) {
           minDist = dist;
           nearestTarget = vertex;
@@ -1394,14 +2691,16 @@ class CityModel {
     
     // Add all exterior patch edges to the graph
     for (const patch of exteriorPatches) {
+      if (!patch.shape || patch.shape.length < 2) continue;
       for (let i = 0; i < patch.shape.length; i++) {
         const v0 = patch.shape[i];
         const v1 = patch.shape[(i + 1) % patch.shape.length];
+        if (!v0 || !v1 || v0.x === undefined || v0.y === undefined || v1.x === undefined || v1.y === undefined) continue;
         
         if (!extendedGraph.has(v0)) extendedGraph.set(v0, {edges: new Map()});
         if (!extendedGraph.has(v1)) extendedGraph.set(v1, {edges: new Map()});
         
-        const dist = Point.distance(v0, v1);
+        const dist = Point.distance(v0, v1, 'buildStreets/exteriorEdge');
         extendedGraph.get(v0).edges.set(v1, dist);
         extendedGraph.get(v1).edges.set(v0, dist);
       }
@@ -1409,6 +2708,7 @@ class CityModel {
     
     // For each gate (real or virtual), pathfind outward to a far point
     for (const gate of roadStartPoints) {
+      if (!gate || gate.x === undefined || gate.y === undefined) continue;
       const angle = Math.atan2(gate.y, gate.x);
       const roadLength = this.cityRadius * 1.5;
       
@@ -1417,6 +2717,7 @@ class CityModel {
       let maxDist = 0;
       
       for (const vertex of extendedGraph.keys()) {
+        if (!vertex || vertex.x === undefined || vertex.y === undefined) continue;
         // Check if vertex is roughly in the gate's direction
         const dx = vertex.x - gate.x;
         const dy = vertex.y - gate.y;
@@ -1436,7 +2737,8 @@ class CityModel {
       if (!bestTarget) {
         // Fallback: just use the farthest vertex from gate
         for (const vertex of extendedGraph.keys()) {
-          const dist = Point.distance(gate, vertex);
+          if (!vertex || vertex.x === undefined || vertex.y === undefined) continue;
+          const dist = Point.distance(gate, vertex, 'buildStreets/farthestFallback');
           if (dist > maxDist) {
             maxDist = dist;
             bestTarget = vertex;
@@ -1455,6 +2757,7 @@ class CityModel {
           
           for (let i = 1; i < path.length; i++) {
             const point = path[i];
+            if (!point || point.x === undefined || point.y === undefined) continue;
             const pointDist = Math.sqrt(point.x * point.x + point.y * point.y);
             
             // Only include points that maintain or increase distance from center
@@ -1470,23 +2773,472 @@ class CityModel {
         }
       }
     }
+    // Optional corner cutting / smoothing (Chaikin) to improve aesthetics
+    const smoothPath = (path, iters = 1, keepEnds = true) => {
+      let pts = path;
+      for (let it = 0; it < iters; it++) {
+        if (!pts || pts.length < 3) break;
+        const out = [];
+        const start = pts[0], end = pts[pts.length - 1];
+        if (keepEnds) out.push(start);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p = pts[i], q = pts[i + 1];
+          const Q = new Point(0.75 * p.x + 0.25 * q.x, 0.75 * p.y + 0.25 * q.y);
+          const R = new Point(0.25 * p.x + 0.75 * q.x, 0.25 * p.y + 0.75 * q.y);
+          out.push(Q, R);
+        }
+        if (keepEnds) { out.push(end); } else { out.pop(); }
+        pts = out;
+      }
+      return pts;
+    };
+
+    // Smooth interior streets and exterior roads
+    if (Array.isArray(this.streets)) {
+      this.streets = this.streets.map(p => smoothPath(p, 1, true));
+    }
+    if (Array.isArray(this.exteriorRoads)) {
+      this.exteriorRoads = this.exteriorRoads.map(p => smoothPath(p, 1, true));
+    }
+
+    // After computing all roads, compute bridges where streets cross water
+    this.computeBridgesFromPaths();
+    // Add forced river crossing if river splits city
+    this.ensureRiverCrossing();
+    // Add random piers for visual interest
+    this.generatePiers();
+    // Then tag adjacent DCEL edges as ROAD
+    this.markRoadEdgesFromStreets();
+  }
+
+  // Compute bridges where streets cross water - ensure bridges ALWAYS touch water edges
+  computeBridgesFromPaths() {
+    this.bridges = [];
+    if (!this.waterBodies || this.waterBodies.length === 0) {
+      console.log('No water bodies for bridge computation');
+      return;
+    }
+    const allPaths = [];
+    if (Array.isArray(this.streets)) allPaths.push(...this.streets);
+    if (Array.isArray(this.exteriorRoads)) allPaths.push(...this.exteriorRoads);
+    if (allPaths.length === 0) {
+      console.log('No paths for bridge computation');
+      return;
+    }
+
+    const streetW = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+    const extend = streetW * 1.2; // Extension to ensure bridge touches banks
+    
+    // Helper: check if segment crosses water polygon boundary
+    const segmentCrossesWater = (a, b, poly) => {
+      const hits = [];
+      for (let j = 0; j < poly.length; j++) {
+        const c = poly[j], d = poly[(j + 1) % poly.length];
+        const r = {x: b.x - a.x, y: b.y - a.y};
+        const s = {x: d.x - c.x, y: d.y - c.y};
+        const denom = r.x * s.y - r.y * s.x;
+        if (Math.abs(denom) < 1e-9) continue; // parallel
+        const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+        const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+        if (t >= -0.05 && t <= 1.05 && u >= -0.01 && u <= 1.01) {
+          hits.push({
+            t: t,
+            point: new Point(a.x + r.x * t, a.y + r.y * t)
+          });
+        }
+      }
+      return hits;
+    };
+
+    const pointInWater = (p, poly) => {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].x, yi = poly[i].y;
+        const xj = poly[j].x, yj = poly[j].y;
+        const intersect = ((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    };
+
+    const seen = new Set();
+    const key = (p, q) => `${p.x.toFixed(0)},${p.y.toFixed(0)}~${q.x.toFixed(0)},${q.y.toFixed(0)}`;
+    
+    let totalCrossings = 0;
+    
+    // For each path, check crossings with each water body
+    for (const path of allPaths) {
+      if (!path || path.length < 2) continue;
+      
+      for (const waterPoly of this.waterBodies) {
+        if (!waterPoly || waterPoly.length < 3) continue;
+        
+        let inWater = false;
+        let entryPoint = null;
+        let entryDir = null;
+        
+        for (let i = 0; i < path.length - 1; i++) {
+          const a = path[i];
+          const b = path[i + 1];
+          if (!a || !b) continue;
+          
+          const segLen = Math.hypot(b.x - a.x, b.y - a.y) || 1e-6;
+          const dir = {x: (b.x - a.x) / segLen, y: (b.y - a.y) / segLen};
+          const hits = segmentCrossesWater(a, b, waterPoly);
+          const aIn = pointInWater(a, waterPoly);
+          const bIn = pointInWater(b, waterPoly);
+          
+          if (!inWater) {
+            // Not in water yet
+            if (hits.length >= 2) {
+              // Enters and exits in same segment
+              hits.sort((x, y) => x.t - y.t);
+              const entry = hits[0];
+              const exit = hits[hits.length - 1];
+              const e0 = new Point(entry.point.x - dir.x * extend, entry.point.y - dir.y * extend);
+              const e1 = new Point(exit.point.x + dir.x * extend, exit.point.y + dir.y * extend);
+              const k = key(e0, e1);
+              if (!seen.has(k)) {
+                this.bridges.push([e0, e1]);
+                seen.add(k);
+                totalCrossings++;
+              }
+            } else if ((hits.length === 1 && !aIn && bIn) || (!aIn && bIn && hits.length === 0)) {
+              // Entering water
+              entryPoint = hits.length > 0 ? hits[0].point : a;
+              entryDir = {x: dir.x, y: dir.y};
+              inWater = true;
+            }
+          } else {
+            // Already in water
+            if ((hits.length > 0 && !bIn) || (!bIn)) {
+              // Exiting water
+              const exitPoint = hits.length > 0 ? hits[hits.length - 1].point : a;
+              const e0 = new Point(entryPoint.x - entryDir.x * extend, entryPoint.y - entryDir.y * extend);
+              const e1 = new Point(exitPoint.x + dir.x * extend, exitPoint.y + dir.y * extend);
+              const k = key(e0, e1);
+              if (!seen.has(k)) {
+                this.bridges.push([e0, e1]);
+                seen.add(k);
+                totalCrossings++;
+              }
+              inWater = false;
+              entryPoint = null;
+              entryDir = null;
+            }
+          }
+        }
+        
+        // If path ends while still in water
+        if (inWater && entryPoint) {
+          const lastPt = path[path.length - 1];
+          const e0 = new Point(entryPoint.x - entryDir.x * extend, entryPoint.y - entryDir.y * extend);
+          const e1 = new Point(lastPt.x + entryDir.x * extend, lastPt.y + entryDir.y * extend);
+          const k = key(e0, e1);
+          if (!seen.has(k)) {
+            this.bridges.push([e0, e1]);
+            seen.add(k);
+            totalCrossings++;
+          }
+        }
+      }
+    }
+    
+    console.log('Bridge computation:', totalCrossings, 'crossings detected,', this.bridges.length, 'unique bridges created from', allPaths.length, 'paths and', this.waterBodies.length, 'water bodies');
+  }
+  
+  // Ensure at least one bridge crosses major rivers that split the city
+  ensureRiverCrossing() {
+    if (!this.waterBodies || this.waterBodies.length === 0) return;
+    if (!this.waterBodyTypes || this.waterBodyTypes.length === 0) return;
+    if (!this.borderShape || this.borderShape.length < 3) return;
+    
+    // Helper: check if point is inside city walls
+    const isInsideCity = (p) => {
+      let inside = false;
+      const poly = this.borderShape;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].x, yi = poly[i].y;
+        const xj = poly[j].x, yj = poly[j].y;
+        const intersect = ((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    };
+    
+    // Find rivers (not coasts) that are wide enough to matter
+    for (let wi = 0; wi < this.waterBodies.length; wi++) {
+      const water = this.waterBodies[wi];
+      const type = this.waterBodyTypes[wi];
+      if (type !== 'river' && type !== 'canal') continue;
+      if (!water || water.length < 4) continue;
+      
+      // Check if we already have bridges crossing this water body INSIDE the city
+      let hasBridge = false;
+      for (const bridge of this.bridges) {
+        const [a, b] = bridge;
+        const midpoint = new Point((a.x + b.x) / 2, (a.y + b.y) / 2);
+        if (!isInsideCity(midpoint)) continue; // Only count bridges inside city
+        
+        // Check if bridge intersects this water body
+        for (let j = 0; j < water.length; j++) {
+          const c = water[j], d = water[(j + 1) % water.length];
+          const r = {x: b.x - a.x, y: b.y - a.y};
+          const s = {x: d.x - c.x, y: d.y - c.y};
+          const denom = r.x * s.y - r.y * s.x;
+          if (Math.abs(denom) < 1e-8) continue;
+          const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+          const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+          if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+            hasBridge = true;
+            break;
+          }
+        }
+        if (hasBridge) break;
+      }
+      
+      if (!hasBridge) {
+        // Create 1-2 bridges at narrowest points INSIDE the city
+        const cityCenter = {x: 0, y: 0};
+        for (const p of this.borderShape) { cityCenter.x += p.x; cityCenter.y += p.y; }
+        cityCenter.x /= this.borderShape.length;
+        cityCenter.y /= this.borderShape.length;
+        
+        // Find narrow crossing points that are inside the city
+        const candidates = [];
+        
+        for (let i = 0; i < water.length; i++) {
+          const p1 = water[i];
+          
+          // Find opposite side points
+          for (let j = Math.floor(water.length / 3); j < water.length - Math.floor(water.length / 3); j++) {
+            const idx = (i + j) % water.length;
+            const p2 = water[idx];
+            const midpoint = new Point((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+            
+            // Only consider crossings where midpoint is inside city
+            if (!isInsideCity(midpoint)) continue;
+            
+            const spanDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            const distToCenter = Math.hypot(midpoint.x - cityCenter.x, midpoint.y - cityCenter.y);
+            
+            // Score favors narrow spans near city center
+            const score = spanDist + distToCenter * 0.3;
+            
+            candidates.push({
+              pair: [p1, p2],
+              score: score,
+              span: spanDist
+            });
+          }
+        }
+        
+        if (candidates.length > 0) {
+          // Sort by score (lower is better)
+          candidates.sort((a, b) => a.score - b.score);
+          
+          // Add 1-2 bridges (best crossing, and maybe a second one if it's different enough)
+          this.bridges.push(candidates[0].pair);
+          console.log('Added forced river crossing bridge inside city (span:', candidates[0].span.toFixed(1), ')');
+          
+          // Maybe add a second crossing if it's far enough from the first
+          if (candidates.length > 1 && Random.chance(0.6)) {
+            const first = candidates[0].pair;
+            const firstMid = new Point((first[0].x + first[1].x) / 2, (first[0].y + first[1].y) / 2);
+            
+            for (let i = 1; i < Math.min(5, candidates.length); i++) {
+              const candidate = candidates[i];
+              const candMid = new Point(
+                (candidate.pair[0].x + candidate.pair[1].x) / 2,
+                (candidate.pair[0].y + candidate.pair[1].y) / 2
+              );
+              const separation = Math.hypot(candMid.x - firstMid.x, candMid.y - firstMid.y);
+              
+              // Add second bridge if it's well separated from first
+              if (separation > this.cityRadius * 0.4) {
+                this.bridges.push(candidate.pair);
+                console.log('Added second river crossing bridge (span:', candidate.span.toFixed(1), ')');
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Generate random piers along water edges for visual interest
+  generatePiers() {
+    if (!this.waterBodies || this.waterBodies.length === 0) return;
+    if (!this.piers) this.piers = [];
+    
+    const streetW = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+    const pierLength = streetW * 2.5;
+    const pierWidth = streetW * 0.8;
+    
+    // Helper: check if a point is inside any OTHER water body (for overlap detection)
+    const isInOtherWater = (point, currentWater) => {
+      for (const otherWater of this.waterBodies) {
+        if (otherWater === currentWater) continue;
+        if (!otherWater || otherWater.length < 3) continue;
+        
+        // Point-in-polygon test
+        let inside = false;
+        for (let i = 0, j = otherWater.length - 1; i < otherWater.length; j = i++) {
+          const xi = otherWater[i].x, yi = otherWater[i].y;
+          const xj = otherWater[j].x, yj = otherWater[j].y;
+          const intersect = ((yi > point.y) !== (yj > point.y)) && 
+                           (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+        if (inside) return true;
+      }
+      return false;
+    };
+    
+    // Generate 2-5 piers per water body
+    for (const water of this.waterBodies) {
+      if (!water || water.length < 4) continue;
+      
+      const numPiers = 2 + Random.int(0, 4);
+      const usedIndices = new Set();
+      let piersAdded = 0;
+      
+      for (let p = 0; p < numPiers && piersAdded < numPiers; p++) {
+        // Pick random point on water edge
+        let idx = Random.int(0, water.length);
+        let attempts = 0;
+        while (usedIndices.has(idx) && attempts < 20) {
+          idx = Random.int(0, water.length);
+          attempts++;
+        }
+        if (attempts >= 20) continue;
+        
+        usedIndices.add(idx);
+        const edgeStart = water[idx];
+        const edgeEnd = water[(idx + 1) % water.length];
+        
+        // Skip if this edge point overlaps with another water body
+        if (isInOtherWater(edgeStart, water) || isInOtherWater(edgeEnd, water)) {
+          continue;
+        }
+        
+        // Pier juts out perpendicular to water edge
+        const ex = edgeEnd.x - edgeStart.x;
+        const ey = edgeEnd.y - edgeStart.y;
+        const len = Math.hypot(ex, ey) || 1e-6;
+        const ux = ex / len, uy = ey / len;
+        const nx = -uy, ny = ux; // perpendicular (inward)
+        
+        // Place pier somewhere along edge
+        const t = 0.2 + Random.float() * 0.6;
+        const baseX = edgeStart.x + ex * t;
+        const baseY = edgeStart.y + ey * t;
+        
+        // Check if pier base overlaps with another water body
+        const pierBase = new Point(baseX, baseY);
+        if (isInOtherWater(pierBase, water)) {
+          continue;
+        }
+        
+        // Pier extends inward (into land)
+        const pierEnd = new Point(baseX + nx * pierLength, baseY + ny * pierLength);
+        
+        // Check if pier end overlaps with another water body
+        if (isInOtherWater(pierEnd, water)) {
+          continue;
+        }
+        
+        this.piers.push({
+          start: new Point(baseX, baseY),
+          end: pierEnd,
+          width: pierWidth
+        });
+        piersAdded++;
+      }
+    }
+    
+    console.log('Generated', this.piers.length, 'random piers along water edges (overlap-filtered)');
+  }
+  
+  // Tag DCEL edges that run along streets/exterior roads
+  markRoadEdgesFromStreets() {
+    if (!this.faces || !this.streets) return;
+    const streetWidth = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+    const half = streetWidth * 0.5;
+
+    const allPaths = [];
+    if (Array.isArray(this.streets)) allPaths.push(...this.streets);
+    if (Array.isArray(this.exteriorRoads)) allPaths.push(...this.exteriorRoads);
+
+    const distPointSeg = (p, a, b) => {
+      const abx = b.x - a.x, aby = b.y - a.y;
+      const apx = p.x - a.x, apy = p.y - a.y;
+      const ab2 = abx * abx + aby * aby || 1e-6;
+      let t = (apx * abx + apy * aby) / ab2; t = Math.max(0, Math.min(1, t));
+      const x = a.x + abx * t, y = a.y + aby * t;
+      const dx = p.x - x, dy = p.y - y;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const segDist = (a, b, c, d) => {
+      // Approximate as min distance from endpoints to opposite segments
+      return Math.min(
+        distPointSeg(a, c, d),
+        distPointSeg(b, c, d),
+        distPointSeg(c, a, b),
+        distPointSeg(d, a, b)
+      );
+    };
+
+    for (const face of this.faces) {
+      if (!face.patch || !face.patch.withinCity) continue;
+      for (const e of face.edges()) {
+        if (e.data === EdgeType.WALL || e.data === EdgeType.WATER) continue; // keep boundary/water classification
+        const [ea, eb] = e.asSegment();
+        let near = false;
+        for (const path of allPaths) {
+          for (let i = 0; i < path.length - 1; i++) {
+            const a = path[i], b = path[i + 1];
+            const d = segDist(ea, eb, a, b);
+            if (d <= half * 0.9) { near = true; break; }
+          }
+          if (near) break;
+        }
+        if (near) e.data = EdgeType.ROAD;
+      }
+    }
   }
   
   buildTopology() {
-    // Build graph of all Voronoi vertices
-    const graph = new Map(); // Point -> {edges: Map<Point, distance>}
+    const graph = new Map();
+    const bridgePenalty = 3.0; // make bridges more expensive than normal streets
     
-    // Build graph from ALL patch edges - don't block anything initially
     for (const patch of this.patches) {
+      if (patch.waterbody) continue;
+      if (!patch.shape || patch.shape.length < 3) continue;
+      
       for (let i = 0; i < patch.shape.length; i++) {
         const v0 = patch.shape[i];
         const v1 = patch.shape[(i + 1) % patch.shape.length];
         
-        // Add vertices to graph
+        // Skip null or invalid vertices
+        if (!v0 || !v1 || v0.x === undefined || v0.y === undefined || v1.x === undefined || v1.y === undefined) {
+          console.warn('Skipping invalid vertex in patch shape');
+          continue;
+        }
+        
+        // Determine water crossing
+        let crossesWater = false;
+        if (this.waterBodies && this.waterBodies.length > 0) {
+          for (const poly of this.waterBodies) {
+            if (segmentIntersectsPolygon(v0, v1, poly)) { crossesWater = true; break; }
+          }
+        }
+        
         if (!graph.has(v0)) graph.set(v0, {edges: new Map()});
         if (!graph.has(v1)) graph.set(v1, {edges: new Map()});
         
-        // Check if this edge crosses the wall (but not at a gate)
         const isWallEdge = this.borderShape && (
           (this.borderShape.includes(v0) && this.borderShape.includes(v1))
         );
@@ -1495,20 +3247,26 @@ class CityModel {
           (g.x === v0.x && g.y === v0.y) || (g.x === v1.x && g.y === v1.y)
         );
         
-        // Skip edges that are wall segments (unless they involve a gate)
         if (isWallEdge && !isGateEdge) continue;
         
-        // Link bidirectional
-        const dist = Point.distance(v0, v1);
+        let dist = Point.distance(v0, v1, 'buildTopology/edgeLen');
+        if (crossesWater) {
+          dist *= bridgePenalty; // allow crossing but make it costly
+        }
         graph.get(v0).edges.set(v1, dist);
         graph.get(v1).edges.set(v0, dist);
       }
     }
     
+    console.log('Topology graph size:', graph.size, 'from', this.patches.length, 'patches');
     return graph;
   }
   
   findPath(graph, start, end) {
+    // Validate inputs early
+    if (!graph || graph.size === 0) return null;
+    if (!start || start.x === undefined || start.y === undefined) return null;
+    if (!end || end.x === undefined || end.y === undefined) return null;
     // Find closest graph vertices to start and end
     let closestStart = null;
     let closestEnd = null;
@@ -1516,13 +3274,14 @@ class CityModel {
     let minEndDist = Infinity;
     
     for (const vertex of graph.keys()) {
-      const startDist = Point.distance(vertex, start);
+      if (!vertex || vertex.x === undefined || vertex.y === undefined) continue;
+      const startDist = Point.distance(vertex, start, 'findPath/closestStart');
       if (startDist < minStartDist) {
         minStartDist = startDist;
         closestStart = vertex;
       }
       
-      const endDist = Point.distance(vertex, end);
+      const endDist = Point.distance(vertex, end, 'findPath/closestEnd');
       if (endDist < minEndDist) {
         minEndDist = endDist;
         closestEnd = vertex;
@@ -1541,10 +3300,15 @@ class CityModel {
     const fScore = new Map();
     
     gScore.set(closestStart, 0);
-    fScore.set(closestStart, Point.distance(closestStart, closestEnd));
+    fScore.set(closestStart, Point.distance(closestStart, closestEnd, 'findPath/initF'));
     
     let iterations = 0;
-    const maxIterations = graph.size * 10; // Safety limit
+    // Reasonable safety limit - cap at 10,000 iterations regardless of graph size
+    const maxIterations = Math.min(10000, Math.max(3000, graph.size * 20));
+    
+    // Track best node found (closest to end) for partial path fallback
+    let bestNode = closestStart;
+    let bestDist = Point.distance(closestStart, closestEnd, 'findPath/bestInit');
     
     while (openSet.size > 0 && iterations < maxIterations) {
       iterations++;
@@ -1553,11 +3317,15 @@ class CityModel {
       let current = null;
       let lowestF = Infinity;
       for (const node of openSet) {
-        const f = fScore.get(node) || Infinity;
-        if (f < lowestF) {
+        const f = fScore.has(node) ? fScore.get(node) : Infinity;
+        if (current === null || f <= lowestF) {
           lowestF = f;
           current = node;
         }
+      }
+      if (current === null) {
+        // No valid node picked; break and return best partial
+        break;
       }
       
       if (current === closestEnd) {
@@ -1569,6 +3337,13 @@ class CityModel {
         }
         path.unshift(start); // Use actual start point
         return path;
+      }
+      
+      // Track best progress towards goal
+      const distToEnd = Point.distance(current, closestEnd, 'findPath/progress');
+      if (distToEnd < bestDist) {
+        bestDist = distToEnd;
+        bestNode = current;
       }
       
       openSet.delete(current);
@@ -1585,14 +3360,25 @@ class CityModel {
         if (tentativeG < currentNeighborG) {
           cameFrom.set(neighbor, current);
           gScore.set(neighbor, tentativeG);
-          fScore.set(neighbor, tentativeG + Point.distance(neighbor, closestEnd));
+          fScore.set(neighbor, tentativeG + Point.distance(neighbor, closestEnd, 'findPath/heuristic'));
           openSet.add(neighbor);
         }
       }
     }
     
     if (iterations >= maxIterations) {
-      console.warn('A* pathfinding exceeded max iterations');
+      console.warn('A* pathfinding exceeded max iterations - returning partial path');
+      // Return partial path to best node found
+      if (bestNode && cameFrom.has(bestNode)) {
+        const path = [bestNode];
+        let current = bestNode;
+        while (cameFrom.has(current)) {
+          current = cameFrom.get(current);
+          path.unshift(current);
+        }
+        path.unshift(start);
+        return path;
+      }
     }
     
     return null; // No path found
@@ -1611,16 +3397,28 @@ class CityModel {
     ];
     
     let typeIndex = 0;
-    const innerPatches = this.patches.filter(p => p.withinCity && p !== this.plaza && p !== this.citadel);
+    // Filter out waterbody patches when creating wards
+    const innerPatches = this.patches.filter(p => 
+      p.withinCity && p !== this.plaza && p !== this.citadel && !p.waterbody
+    );
     
     // Plaza if needed
     if (this.plaza) {
       this.plaza.ward = new Plaza(this, this.plaza);
     }
-    
-    // Castle on citadel if present
-    if (this.citadel) {
+
+    // Citadel outside walls if enabled
+    if (this.citadel && this.citadelNeeded) {
       this.citadel.ward = new Castle(this, this.citadel);
+    }
+    // Urban castle inside walls if enabled (independent of citadel)
+    if (StateManager.urbanCastle) {
+      const candidates = innerPatches.filter(p => p !== this.plaza && p !== this.citadel && !p.waterbody);
+      const central = candidates.sort((a,b)=>{
+        const ca=Polygon.centroid(a.shape), cb=Polygon.centroid(b.shape);
+        return Point.distance(ca,new Point(0,0)) - Point.distance(cb,new Point(0,0));
+      })[0];
+      if (central) central.ward = new Castle(this, central);
     }
     
     for (const patch of innerPatches) {
@@ -1654,11 +3452,26 @@ class CityModel {
     
     // Assign farms to outer patches with good compactness
     for (const patch of this.patches) {
-      if (!patch.withinCity && !patch.ward) {
+      if (!patch.withinCity && !patch.ward && !patch.waterbody) {
         const compactness = this.calculateCompactness(patch.shape);
-        if (Random.chance(0.2) && compactness >= 0.7) {
+        if (Random.chance(0.35) && compactness >= 0.6) {
           patch.ward = new Farm(this, patch);
         }
+      }
+    }
+
+    // Optional shantytown outside the gates
+    if (StateManager.shantytown && this.gates && this.gates.length > 0) {
+      for (const gate of this.gates) {
+        // pick a nearby outer patch and mark as slum
+        let best = null, bestD = Infinity;
+        for (const patch of this.patches) {
+          if (patch.withinCity || patch.ward || patch.waterbody) continue;
+          const c = Polygon.centroid(patch.shape);
+          const d = Point.distance(c, gate);
+          if (d < bestD) { bestD = d; best = patch; }
+        }
+        if (best) best.ward = new Slum(this, best);
       }
     }
   }
@@ -1691,6 +3504,145 @@ class CityModel {
       if (patch.ward) {
         patch.ward.buildGeometry();
       }
+    }
+  }
+
+  // Generate symmetric building strips along exterior roads within outside patches.
+  // Buildings are clipped to outside patches and respect water at render time.
+  buildOutsideSettlements() {
+    if (!Array.isArray(this.exteriorRoads) || this.exteriorRoads.length === 0) return;
+    const outsidePatches = this.patches.filter(p => !p.withinCity && !p.waterbody);
+    if (outsidePatches.length === 0) return;
+
+    const streetWidth = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
+    const gap = (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.6;
+    const depthBase = 5.5; // base building depth from road centerline
+    const targetFacade = 5.5; // target facade width along road
+
+    const pointInPoly = (pt, poly) => {
+      let inside=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+        const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+        const inter=((yi>pt.y)!=(yj>pt.y)) && (pt.x < (xj-xi)*(pt.y-yi)/(yj-yi)+xi); if (inter) inside=!inside;
+      } return inside;
+    };
+    const segmentClipToPoly = (a, b, poly) => {
+      // Return array of [p0,p1] segments lying inside poly
+      // Find all intersections and build intervals
+      const ts = [];
+      const r = {x: b.x - a.x, y: b.y - a.y};
+      for (let i=0;i<poly.length;i++){
+        const c = poly[i], d = poly[(i+1)%poly.length];
+        const s = {x: d.x - c.x, y: d.y - c.y};
+        const denom = r.x * s.y - r.y * s.x; if (Math.abs(denom) < 1e-8) continue;
+        const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+        const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1) ts.push(Math.max(0, Math.min(1, t)));
+      }
+      ts.sort((x,y)=>x-y);
+      // Ensure endpoints considered
+      const aIn = pointInPoly(a, poly);
+      const bIn = pointInPoly(b, poly);
+      const tvals = [];
+      if (aIn) tvals.push(0);
+      for (const t of ts) tvals.push(t);
+      if (bIn) tvals.push(1);
+      // Build pairs alternating inside/outside starting with aIn
+      const segments = [];
+      if (tvals.length === 0) return segments;
+      let inside = aIn;
+      let prevT = tvals[0];
+      // Merge duplicates
+      const uniq = [tvals[0]];
+      for (let i=1;i<tvals.length;i++){ if (Math.abs(tvals[i]-uniq[uniq.length-1])>1e-6) uniq.push(tvals[i]); }
+      for (const t of uniq){
+        if (!inside) { inside = true; prevT = t; }
+        else {
+          const t0 = prevT, t1 = t;
+          if (t1 - t0 > 1e-4) {
+            const p0 = new Point(a.x + r.x * t0, a.y + r.y * t0);
+            const p1 = new Point(a.x + r.x * t1, a.y + r.y * t1);
+            segments.push([p0,p1]);
+          }
+          inside = false;
+        }
+      }
+      return segments;
+    };
+
+    const makeStripBuildings = (p0, p1, depthScale=1.0) => {
+      const dx = p1.x - p0.x, dy = p1.y - p0.y; const len = Math.hypot(dx,dy) || 1e-6;
+      const nx = -dy/len, ny = dx/len;
+      const out = streetWidth*0.5 + gap; // from centerline to near edge
+      const inner = out + depthBase*depthScale;         // from centerline to inner edge of buildings
+      // Quad on one side
+      const a1 = new Point(p0.x + nx*out, p0.y + ny*out);
+      const b1 = new Point(p1.x + nx*out, p1.y + ny*out);
+      const c1 = new Point(p1.x + nx*inner, p1.y + ny*inner);
+      const d1 = new Point(p0.x + nx*inner, p0.y + ny*inner);
+      // Opposite side
+      const a2 = new Point(p0.x - nx*out, p0.y - ny*out);
+      const b2 = new Point(p1.x - nx*out, p1.y - ny*out);
+      const c2 = new Point(p1.x - nx*inner, p1.y - ny*inner);
+      const d2 = new Point(p0.x - nx*inner, p0.y - ny*inner);
+      const strips = [ [a1,b1,c1,d1], [a2,b2,c2,d2] ];
+      // Subdivide strips into row buildings
+      const count = Math.max(1, Math.floor(len / targetFacade));
+      const rows = [];
+      for (const s of strips){
+        const [sa,sb,sc,sd] = s;
+        for (let k=0;k<count;k++){
+          const t0=k/count, t1=(k+1)/count;
+          const pA = new Point(sa.x + (sb.x-sa.x)*t0, sa.y + (sb.y-sa.y)*t0);
+          const pB = new Point(sa.x + (sb.x-sa.x)*t1, sa.y + (sb.y-sa.y)*t1);
+          const pC = new Point(sd.x + (sc.x-sd.x)*t1, sd.y + (sc.y-sd.y)*t1);
+          const pD = new Point(sd.x + (sc.x-sd.x)*t0, sd.y + (sc.y-sd.y)*t0);
+          rows.push([pA,pB,pC,pD]);
+        }
+      }
+      return rows;
+    };
+
+    // For each outside patch, gather overlapping road segments and create buildings
+    for (const patch of outsidePatches) {
+      // Skip farms: we don't build settlements over farm fields
+      if (patch.ward instanceof Farm) continue;
+      let ward = patch.ward;
+      if (!ward) { ward = new Ward(this, patch, 'residential'); patch.ward = ward; }
+      const buildings = ward.geometry || [];
+      for (const road of this.exteriorRoads) {
+        // Precompute total length for tapering from gate outward
+        let totalLen = 0; const segLens = [];
+        for (let i=0;i<road.length-1;i++){ const a=road[i], b=road[i+1]; const L=Math.hypot(b.x-a.x,b.y-a.y); segLens.push(L); totalLen+=L; }
+        let acc = 0;
+        for (let i=0;i<road.length-1;i++){
+          const a = road[i], b = road[i+1];
+          const L = segLens[i] || Math.hypot(b.x-a.x,b.y-a.y);
+          // Taper depth: strong near city, fades outward; none after 60% of the road
+          const t0 = acc/Math.max(1e-6,totalLen);
+          const t1 = (acc+L)/Math.max(1e-6,totalLen);
+          const tMid = (t0+t1)/2;
+          // Depth scale: 1 at start, 0 at >=0.6
+          const depthScale = Math.max(0, 1 - tMid/0.6);
+          acc += L;
+          // Quick reject by midpoint if far
+          const mid = new Point((a.x+b.x)/2, (a.y+b.y)/2);
+          const inOrNear = pointInPoly(mid, patch.shape);
+          if (!inOrNear) {
+            // Still might cross: check any endpoint inside
+            if (!pointInPoly(a, patch.shape) && !pointInPoly(b, patch.shape)) {
+              // As last resort, if segment intersects polygon, we'll clip accordingly below
+            }
+          }
+          const insideSegs = segmentClipToPoly(a,b,patch.shape);
+          for (const seg of insideSegs){
+            const [p0,p1] = seg;
+            if (depthScale <= 0.05) continue; // too far from gate
+            const rows = makeStripBuildings(p0,p1, depthScale);
+            buildings.push(...rows);
+          }
+        }
+      }
+      ward.geometry = buildings;
     }
   }
 }
@@ -1763,7 +3715,6 @@ class CityRenderer {
     
     // Create or update FormalMap (recreate if settings changed)
     if (!this.formalMap || this.settingsChanged()) {
-      console.log('[View Arch] Creating new FormalMap with gap:', cityData.settings.buildingGap);
       this.formalMap = new FormalMap(cityData, Palette);
       this.lastSettings = {
         streetWidth: StateManager.streetWidth,
@@ -1786,6 +3737,16 @@ class CityRenderer {
       showCellOutlines: StateManager.showCellOutlines
     });
     
+    // Draw water bodies AFTER walls/wards so they appear on top
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawWaterBodies(ctx, this.model.waterBodies);
+    }
+
+    // Draw bridges on top of water/roads
+    if (this.model.bridges && this.model.bridges.length > 0) {
+      this.drawBridges(ctx, this.model.bridges);
+    }
+    
     // Draw trees if enabled (before labels so labels appear on top)
     if (StateManager.showTrees) {
       if (!this.globalTrees) {
@@ -1799,12 +3760,13 @@ class CityRenderer {
     // Draw labels if enabled (after trees so they appear on top)
     if (StateManager.showLabels) {
       for (const patch of this.model.patches) {
-        if (patch.ward) {
-          this.drawLabel(ctx, patch, patch.ward.getLabel());
-        } else if (patch === this.model.plaza) {
+        if (patch === this.model.plaza) {
           this.drawLabel(ctx, patch, 'Plaza');
-        } else if (patch === this.model.citadel && !patch.ward) {
+        } else if (patch === this.model.citadel) {
+          // Always label the citadel as such
           this.drawLabel(ctx, patch, 'Citadel');
+        } else if (patch.ward) {
+          this.drawLabel(ctx, patch, patch.ward.getLabel());
         }
       }
     }
@@ -1818,14 +3780,17 @@ class CityRenderer {
   prepareCityData() {
     const wards = [];
     
-    // Convert patches to ward data
+    // Convert patches to ward data (include both inside and outside; rendering will clip appropriately)
     for (const patch of this.model.patches) {
+      const isInside = !!patch.withinCity;
       const wardData = {
         shape: patch.shape,
+        availableShape: patch.ward ? patch.ward.availableShape : null,
         color: this.getPatchColor(patch),
         type: this.getPatchType(patch),
         buildings: [],
-        furrows: null
+        furrows: null,
+        inside: isInside
       };
       
       // Add buildings if ward has geometry
@@ -1851,6 +3816,8 @@ class CityRenderer {
       path: street,
       major: street.major || false
     }));
+      // Bridges (from topology water-crossing edges)
+      const bridges = (this.model.bridges || []).map(seg => ({ a: seg[0], b: seg[1] }));
     
     // Add exterior roads
     if (this.model.exteriorRoads) {
@@ -1893,10 +3860,12 @@ class CityRenderer {
       wards: wards,
       streets: streets,
       walls: walls,
+      bridges: bridges,
       settings: {
         streetWidth: (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0,
         buildingGap: (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.8,
-        wallThickness: (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5
+        wallThickness: (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5,
+        interiorClip: (this.model.borderShape && this.model.borderShape.length >= 3) ? this.model.borderShape : null
       }
     };
   }
@@ -2031,14 +4000,29 @@ class CityRenderer {
         this.drawCitadelWall(ctx, patch.ward);
       }
       
-      // Draw ward geometry (buildings)
+      // Draw ward geometry (buildings), clipping inside/outside depending on patch.withinCity
       if (patch.ward && patch.ward.geometry) {
-        this.drawBuildings(ctx, patch.ward.geometry);
+        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity);
       }
     }
     
     for (const gate of this.model.gates) {
       this.drawGate(ctx, gate);
+    }
+    
+    // Draw water bodies if enabled
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawWaterBodies(ctx, this.model.waterBodies);
+    }
+
+    // Draw piers before bridges
+    if (this.model.piers && this.model.piers.length > 0) {
+      this.drawPiers(ctx, this.model.piers);
+    }
+
+    // Draw bridges on top of water/roads
+    if (this.model.bridges && this.model.bridges.length > 0) {
+      this.drawBridges(ctx, this.model.bridges);
     }
     
     // Draw trees if enabled (before labels so labels appear on top)
@@ -2109,101 +4093,73 @@ class CityRenderer {
   }
 
   spawnGlobalTrees() {
-    const trees = [];
-    const cityRadius = this.model.cityRadius;
-    
-    // Base tree spacing and parameters
-    const treeSpacing = 4.0; // Base spacing between trees
-    const buildingDisplaceChance = 0.05; // 5% chance tree displaces a building
-    const treePlacementMultiplier = 3.0; // Trees are 3x more likely to be placed than displace buildings
-    
-    // Save RNG state to avoid affecting deterministic generation
-    const savedSeed = Random.seed;
-    
-    // Process each patch
-    for (const patch of this.model.patches) {
-      const ward = patch.ward;
-      if (!ward || !patch.shape || patch.shape.length < 3) continue;
-      
-      // Calculate distance from city center to patch center
-      const patchCenter = Polygon.centroid(patch.shape);
-      const distanceFromCenter = Math.sqrt(patchCenter.x * patchCenter.x + patchCenter.y * patchCenter.y);
-      const normalizedDistance = distanceFromCenter / cityRadius; // 0 (center) to 1+ (edge)
-      
-      // Linear density falloff from center to edge
-      // At center: 1.0, at edge: 0.2, beyond edge: 0
-      let densityMultiplier = Math.max(0, 1.0 - normalizedDistance * 0.8);
-      
-      // Special handling for different ward types
-      let baseDensity = 0.4; // Default density
-      let canPlaceTrees = true;
-      
-      if (ward instanceof Park) {
-        baseDensity = 0.85; // Parks are very dense with trees
-        densityMultiplier = 1.0; // Parks ignore distance falloff
-      } else if (ward instanceof Farm) {
-        // Farms have minimal trees - use deterministic check based on patch position
-        baseDensity = 0.02; // Very sparse - only near farmhouse
-        // Use patch center hash for deterministic placement
-        const patchHash = ((patchCenter.x * 73856093) ^ (patchCenter.y * 19349663)) & 0x7FFFFFFF;
-        canPlaceTrees = (patchHash % 100) < 30; // 30% of farms get trees (deterministic)
-      } else if (ward instanceof Market || ward instanceof Cathedral) {
-        baseDensity = 0.15; // Less trees in important civic areas
-      } else if (ward instanceof Castle) {
-        baseDensity = 0.1; // Minimal trees in military areas
-      }
-      
-      if (!canPlaceTrees) continue;
-      
-      // Final density calculation
-      const finalDensity = baseDensity * densityMultiplier;
-      
-      // Get available area for tree placement
-      let availableArea = patch.shape;
-      
-      // For wards with buildings, potentially displace some buildings
-      const wardTrees = [];
-      
-      // Fill area with Poisson-like sampling
-      const points = this.fillAreaWithTreePattern(availableArea, treeSpacing, finalDensity);
-      
-      for (const point of points) {
-        // Check if tree placement conflicts with building
-        let canPlace = true;
-        
-        // Check against buildings in this ward
-        if (ward.geometry) {
-          for (const building of ward.geometry) {
-            if (building.type === 'polygon' && this.isPointInPolygon(point, building.points)) {
-              // Tree would be inside a building
-              // Use deterministic hash for building displacement
-              const pointHash = ((point.x * 73856093) ^ (point.y * 19349663)) & 0x7FFFFFFF;
-              if ((pointHash % 100) >= buildingDisplaceChance * 100) {
-                canPlace = false;
-                break;
-              }
-              // Otherwise tree displaces building (rare)
-            }
-          }
-        }
-        
-        // Apply tree placement probability (higher than building displacement)
-        // Use deterministic hash for placement decision
-        const pointHash2 = ((point.x * 19349663) ^ (point.y * 83492791)) & 0x7FFFFFFF;
-        if (canPlace && (pointHash2 % 10000) < treePlacementMultiplier * finalDensity * 10000) {
-          wardTrees.push({
-            pos: point,
-            crown: this.getTreeCrown()
-          });
+    // Allow opting into Poisson trees explicitly; keep legacy sparse trees by default
+    if (StateManager.treeMode === 'poisson') {
+      const trees = [];
+      const cityRadius = this.model.cityRadius;
+      const savedSeed = Random.seed;
+      const farmPolys = this.model.patches.filter(p => p.ward instanceof Farm).map(p => p.shape);
+      const pointSegDist = (p, a, b) => {
+        const abx=b.x-a.x, aby=b.y-a.y; const apx=p.x-a.x, apy=p.y-a.y; const ab2=abx*abx+aby*aby||1e-6; let t=(apx*abx+apy*aby)/ab2; t=Math.max(0,Math.min(1,t)); const x=a.x+abx*t, y=a.y+aby*t; return Math.hypot(p.x-x,p.y-y);
+      };
+      const pointPolyDist = (p, poly) => {
+        let best=Infinity; for (let i=0;i<poly.length;i++){const a=poly[i], b=poly[(i+1)%poly.length]; best=Math.min(best, pointSegDist(p,a,b));} return best;
+      };
+      const inAnyWater = (pt) => {
+        if (!this.model.waterBodies || this.model.waterBodies.length === 0) return false;
+        for (const w of this.model.waterBodies) { if (w && w.length>=3 && this.isPointInPolygon(pt,w)) return true; } return false;
+      };
+      for (const patch of this.model.patches) {
+        const ward = patch.ward; if (!ward || !patch.shape || patch.shape.length<3) continue;
+        const patchCenter = Polygon.centroid(patch.shape);
+        const distCenter = Math.hypot(patchCenter.x, patchCenter.y);
+        const norm = distCenter / cityRadius;
+        let base = 4.0; if (ward instanceof Park) base = 2.8; else if (ward instanceof Farm) base = 6.5; else if (ward instanceof Market || ward instanceof Cathedral) base = 5.2; else if (ward instanceof Castle) base = 6.8;
+        const falloff = 0.8*norm; const spacing0 = base * (1.0 + falloff);
+        const densityFn = (p)=>{
+          const n = (PerlinNoise.noise(p.x*0.06, p.y*0.06)+1)*0.5; let local = spacing0 * (0.85 + 0.5*n);
+          if (!(ward instanceof Farm) && farmPolys.length>0){ let nearest = Infinity; for (const f of farmPolys){ nearest = Math.min(nearest, pointPolyDist(p,f)); if (nearest<6) break; } if (isFinite(nearest) && nearest < 12) local *= (0.95 + 0.1*(nearest/12)); }
+          if (ward instanceof Farm){ const db = pointPolyDist(p, patch.shape); if (db < 8) local *= (0.8 + 0.4*(db/8)); else local *= 1.8; }
+          return local;
+        };
+        const poly = (patch.ward && patch.ward.availableShape && patch.ward.availableShape.length>=3) ? patch.ward.availableShape : patch.shape;
+        const points = CityRenderer.poissonSample(poly, densityFn, 30);
+        for (const point of points) {
+          if (inAnyWater(point)) continue;
+          let ok = true; if (ward.geometry) { for (const building of ward.geometry) { const polyB = Array.isArray(building) ? building : (building && building.points ? building.points : null); if (polyB && polyB.length>=3 && this.isPointInPolygon(point, polyB)) { ok = false; break; } } }
+          if (!ok) continue;
+          trees.push({ pos: point, crown: this.getTreeCrown() });
         }
       }
-      
-      trees.push(...wardTrees);
+      Random.seed = savedSeed; return trees;
     }
-    
-    // Restore RNG state
-    Random.seed = savedSeed;
-    
+
+    // Legacy sparse trees: grid+jitter with low density
+    const trees = [];
+    const inAnyWater = (pt) => {
+      if (!this.model.waterBodies || this.model.waterBodies.length === 0) return false;
+      for (const w of this.model.waterBodies) { if (w && w.length>=3 && this.isPointInPolygon(pt,w)) return true; } return false;
+    };
+    for (const patch of this.model.patches) {
+      const ward = patch.ward; if (!ward || !patch.shape || patch.shape.length<3) continue;
+      // Suppress most trees on outer blank wards (outside walls & not park/farm)
+      const outside = !patch.withinCity;
+      const isPark = ward instanceof Park; const isFarm = ward instanceof Farm;
+      if (outside && !isPark && !isFarm) {
+        // Skip entirely to avoid cluttering outer blanks
+        continue;
+      }
+      const spacing = isPark ? 3.2 : (isFarm ? 8.0 : 7.0);
+      const baseDensity = isPark ? 0.55 : (isFarm ? 0.06 : 0.18);
+      const density = outside ? baseDensity * 0.3 : baseDensity; // lighter just outside walls if allowed (parks/farms)
+      const candidates = this.fillAreaWithTreePattern(patch.shape, spacing, density);
+      for (const point of candidates) {
+        if (inAnyWater(point)) continue;
+        let ok = true; if (ward.geometry) { for (const building of ward.geometry) { const polyB = Array.isArray(building) ? building : (building && building.points ? building.points : null); if (polyB && polyB.length>=3 && this.isPointInPolygon(point, polyB)) { ok = false; break; } } }
+        if (!ok) continue;
+        trees.push({ pos: point, crown: this.getTreeCrown() });
+      }
+    }
     return trees;
   }
 
@@ -2241,8 +4197,30 @@ class CityRenderer {
     return points;
   }
 
+  // Bridson Poisson-disk sampling within a polygon with variable spacing.
+  // densityFn returns local minimal spacing (radius) at a point.
+  static poissonSample(polygon, densityFnOrR, k = 30) {
+    const rAt = (p) => (typeof densityFnOrR === 'function' ? Math.max(0.8, densityFnOrR(p)) : Math.max(0.8, densityFnOrR));
+    // Bounding box
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity; for(const v of polygon){minX=Math.min(minX,v.x);minY=Math.min(minY,v.y);maxX=Math.max(maxX,v.x);maxY=Math.max(maxY,v.y);}    
+    // Use conservative smallest cell for grid based on min r in bbox corners
+    const sampleR = (x,y)=>rAt(new Point(x,y));
+    const rmin = Math.max(0.8, Math.min(sampleR(minX,minY), sampleR(maxX,maxY), sampleR(minX,maxY), sampleR(maxX,minY)));
+    const cell = rmin/Math.SQRT2;
+    const cols = Math.ceil((maxX-minX)/cell)+1, rows = Math.ceil((maxY-minY)/cell)+1;
+    const grid = new Array(cols*rows).fill(null);
+    const toIndex = (p)=>{const x=Math.floor((p.x-minX)/cell), y=Math.floor((p.y-minY)/cell); return y*cols+x;};
+    const inPoly = (pt)=>{ let inside=false; for(let i=0,j=polygon.length-1;i<polygon.length;j=i++){const xi=polygon[i].x, yi=polygon[i].y, xj=polygon[j].x, yj=polygon[j].y; const inter=((yi>pt.y)!=(yj>pt.y)) && (pt.x < (xj-xi)*(pt.y-yi)/(yj-yi)+xi); if (inter) inside=!inside;} return inside; };
+    const samples = []; const active = [];
+    // initial sample
+    let tries = 0; while(tries++<50){ const p = new Point(minX + Random.float()*(maxX-minX), minY + Random.float()*(maxY-minY)); if (inPoly(p)) { samples.push(p); active.push(p); grid[toIndex(p)] = p; break; }}
+    if (samples.length===0) return samples;
+    while(active.length){ const idx = Random.int(0, active.length); const s = active[idx]; const r = rAt(s); let placed=false; for (let i=0;i<k;i++){ const ang = Random.float()*Math.PI*2; const mag = r*(1 + Random.float()); const p = new Point(s.x + Math.cos(ang)*mag, s.y + Math.sin(ang)*mag); if (!inPoly(p)) continue; const rad = rAt(p); const gx = Math.floor((p.x-minX)/cell), gy = Math.floor((p.y-minY)/cell); let ok=true; for(let yy=Math.max(0,gy-2); yy<=Math.min(rows-1,gy+2) && ok; yy++){ for(let xx=Math.max(0,gx-2); xx<=Math.min(cols-1,gx+2) && ok; xx++){ const q = grid[yy*cols+xx]; if(!q) continue; if (Point.distance(p,q) < Math.min(rad, rAt(q))) ok=false; }} if(!ok) continue; samples.push(p); active.push(p); grid[toIndex(p)]=p; placed=true; break; } if(!placed){ active.splice(idx,1); } }
+    return samples;
+  }
+
   getTreeCrown() {
-    // Generate a random tree crown polygon (MFCG implementation)
+    // Generate a random tree crown polygon 
     const r1 = Random.float();
     const r2 = Random.float();
     const r3 = Random.float();
@@ -2287,10 +4265,44 @@ class CityRenderer {
   drawPatch(ctx, patch) {
     if (patch.shape.length === 0) return;
     
+    // Use the ward's inset shape if available (respects walls/water), otherwise use patch shape
+    const shapeToRender = (patch.ward && patch.ward.availableShape && patch.ward.availableShape.length >= 3) 
+      ? patch.ward.availableShape 
+      : patch.shape;
+
+    // Clip to walls: interior for inside-city patches, exterior for outside-city patches
+    let clipped = false;
+    if (this.model.borderShape && this.model.borderShape.length >= 3) {
+      clipped = true;
+      ctx.save();
+      ctx.beginPath();
+      if (patch.withinCity) {
+        ctx.moveTo(this.model.borderShape[0].x, this.model.borderShape[0].y);
+        for (let i = 1; i < this.model.borderShape.length; i++) {
+          ctx.lineTo(this.model.borderShape[i].x, this.model.borderShape[i].y);
+        }
+        ctx.closePath();
+        ctx.clip();
+      } else {
+        const M = 1e5;
+        ctx.moveTo(-M, -M);
+        ctx.lineTo(M, -M);
+        ctx.lineTo(M, M);
+        ctx.lineTo(-M, M);
+        ctx.closePath();
+        ctx.moveTo(this.model.borderShape[0].x, this.model.borderShape[0].y);
+        for (let i = 1; i < this.model.borderShape.length; i++) {
+          ctx.lineTo(this.model.borderShape[i].x, this.model.borderShape[i].y);
+        }
+        ctx.closePath();
+        try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+      }
+    }
+    
     ctx.beginPath();
-    ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
-    for (let i = 1; i < patch.shape.length; i++) {
-      ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+    ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+    for (let i = 1; i < shapeToRender.length; i++) {
+      ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
     }
     ctx.closePath();
     
@@ -2320,17 +4332,21 @@ class CityRenderer {
     
     // Draw cell boundaries if option enabled
     if (StateManager.showCellOutlines) {
+      const safeScale = Math.max(1e-3, this.scale || 1);
       ctx.strokeStyle = Palette.light + '30';
-      ctx.lineWidth = 1 / this.scale;
+      ctx.lineWidth = Math.min(6, 1 / safeScale);
       ctx.stroke();
     }
+
+    if (clipped) ctx.restore();
   }
 
   drawWall(ctx, wall) {
     if (wall.length === 0) return;
     
     const gates = this.model.gates || [];
-    const wallThickness = (StateManager.wallThickness || 2) / this.scale;
+    const safeScale = Math.max(1e-3, this.scale || 1);
+    const wallThickness = (StateManager.wallThickness || 2) / safeScale;
     
     ctx.strokeStyle = Palette.dark;
     ctx.lineWidth = wallThickness;
@@ -2361,6 +4377,123 @@ class CityRenderer {
       }
       
       ctx.restore();
+    }
+
+    // Erase wall where it crosses water bodies to create river/coast gaps
+    if (this.model.waterBodies && this.model.waterBodies.length > 0) {
+      for (const water of this.model.waterBodies) {
+        if (!water || water.length < 3) continue;
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        // Clip to water polygon
+        ctx.beginPath();
+        ctx.moveTo(water[0].x, water[0].y);
+        for (let i = 1; i < water.length; i++) ctx.lineTo(water[i].x, water[i].y);
+        ctx.closePath();
+        ctx.clip();
+
+        // Stroke along wall path inside water to carve a gap
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = wallThickness * 2.2; // slightly larger than wall
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(wall[0].x, wall[0].y);
+        for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // Watergates: draw piers where wall intersects water
+    if (this.model.waterBodies && this.model.waterBodies.length > 0) {
+      const drawPiersAt = (p0, p1) => {
+        // Vector and safe length
+        const vx = p1.x - p0.x, vy = p1.y - p0.y;
+        const len = Math.hypot(vx, vy);
+        if (!isFinite(len) || len <= 1e-6) return; // nothing to draw
+        const ux = vx / len, uy = vy / len; const nx = -uy, ny = ux;
+        
+        // Robust sizing with clamps to avoid 0 or Infinity
+        const safeScale = Math.max(1e-3, this.scale || 1);
+        const baseThick = Math.max(0.5, (StateManager.wallThickness || 2));
+        const pierLen = Math.max(0.6 / safeScale, (baseThick * 1.2) / safeScale);
+        const spacing = Math.max(0.8 / safeScale, pierLen * 1.6);
+        
+        // Count must be a finite integer and reasonably bounded
+        let count = Math.floor(len / spacing);
+        if (!isFinite(count) || count < 2) count = 2;
+        count = Math.min(count, 200); // hard cap to prevent runaway loops
+        
+        ctx.save();
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.6 / safeScale, 0.6);
+        for (let i = 0; i <= count; i++) {
+          const t = i / count;
+          const x = p0.x + vx * t, y = p0.y + vy * t;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + nx * pierLen, y + ny * pierLen);
+          ctx.stroke();
+        }
+        ctx.restore();
+      };
+      // Find intersections between wall segments and each water polygon
+      for (let i = 0; i < wall.length; i++) {
+        const a = wall[i]; const b = wall[(i+1)%wall.length];
+        for (const water of this.model.waterBodies) {
+          for (let j=0;j<water.length;j++){
+            const c = water[j], d = water[(j+1)%water.length];
+            const r = {x: b.x - a.x, y: b.y - a.y};
+            const s = {x: d.x - c.x, y: d.y - c.y};
+            const denom = r.x * s.y - r.y * s.x; if (Math.abs(denom) < 1e-8) continue;
+            const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+            const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+            if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+              // Draw a short pier segment centered around intersection along the wall direction
+              const mid = new Point(a.x + r.x * t, a.y + r.y * t);
+              const rlen = Math.hypot(r.x, r.y) || 1e-6;
+              const ux = r.x / rlen, uy = r.y / rlen; // wall tangent
+              const nx = -uy, ny = ux; // outward normal (both sides visually ok)
+              const segHalf = Math.min(3 / this.scale, 0.5 * rlen);
+              const p0 = new Point(mid.x - ux * segHalf, mid.y - uy * segHalf);
+              const p1 = new Point(mid.x + ux * segHalf, mid.y + uy * segHalf);
+              drawPiersAt(p0, p1);
+
+              // Distinct watergate treatment by water type
+              if (this.model.riverType === 'canal') {
+                // Stone arch over the gap
+                const archR = Math.max(wallThickness * 1.1, 1.2 / this.scale);
+                const theta0 = Math.atan2(ny, nx) - Math.PI * 0.5; // orient across wall
+                ctx.save();
+                ctx.strokeStyle = Palette.dark;
+                ctx.lineWidth = Math.max(0.7 / this.scale, 0.7);
+                ctx.beginPath();
+                ctx.arc(mid.x, mid.y, archR, theta0, theta0 + Math.PI, false);
+                ctx.stroke();
+                ctx.restore();
+              } else if (this.model.riverType === 'river') {
+                // Wooden abutments/posts at the edges of the gap
+                const postLen = Math.max(1.2 / this.scale, wallThickness * 0.8);
+                const inset = Math.max(0.4 / this.scale, wallThickness * 0.5);
+                const left = new Point(mid.x - ux * inset, mid.y - uy * inset);
+                const right = new Point(mid.x + ux * inset, mid.y + uy * inset);
+                ctx.save();
+                ctx.strokeStyle = Palette.dark;
+                ctx.lineWidth = Math.max(0.9 / this.scale, 0.9);
+                ctx.beginPath();
+                ctx.moveTo(left.x - nx * postLen, left.y - ny * postLen);
+                ctx.lineTo(left.x + nx * postLen, left.y + ny * postLen);
+                ctx.moveTo(right.x - nx * postLen, right.y - ny * postLen);
+                ctx.lineTo(right.x + nx * postLen, right.y + ny * postLen);
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -2430,10 +4563,34 @@ class CityRenderer {
     ctx.stroke();
   }
 
-  drawBuildings(ctx, buildings) {
+  drawBuildings(ctx, buildings, inside = true) {
     if (!StateManager.showBuildings) return;
     
-    const gap = this.model.buildingGap;
+    const gap = StateManager.lotsMode ? Math.min(this.model.buildingGap, 1.0) : this.model.buildingGap;
+    const border = this.model.borderShape;
+    let didClip = false;
+    if (Array.isArray(border) && border.length >= 3) {
+      didClip = true;
+      ctx.save();
+      ctx.beginPath();
+      if (inside) {
+        ctx.moveTo(border[0].x, border[0].y);
+        for (let i = 1; i < border.length; i++) ctx.lineTo(border[i].x, border[i].y);
+        ctx.closePath();
+        ctx.clip();
+      } else {
+        const M = 1e5;
+        ctx.moveTo(-M, -M);
+        ctx.lineTo(M, -M);
+        ctx.lineTo(M, M);
+        ctx.lineTo(-M, M);
+        ctx.closePath();
+        ctx.moveTo(border[0].x, border[0].y);
+        for (let i = 1; i < border.length; i++) ctx.lineTo(border[i].x, border[i].y);
+        ctx.closePath();
+        try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+      }
+    }
     
     // Process buildings with gap if needed
     let processedBuildings = buildings;
@@ -2454,8 +4611,34 @@ class CityRenderer {
       processedBuildings = buildings.filter(b => Array.isArray(b) && b.length > 0);
     }
     
+    // Visual-only clipping: don't draw building pixels where water exists
+    // This preserves buildings elsewhere and avoids global removals
+    let didWaterClip = false;
+    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      didWaterClip = true;
+      ctx.save();
+      const M = 1e5;
+      ctx.beginPath();
+      // Big rect
+      ctx.moveTo(-M, -M);
+      ctx.lineTo(M, -M);
+      ctx.lineTo(M, M);
+      ctx.lineTo(-M, M);
+      ctx.closePath();
+      // Subtract each water polygon
+      for (const water of this.model.waterBodies) {
+        if (!water || water.length < 3) continue;
+        ctx.moveTo(water[0].x, water[0].y);
+        for (let i = 1; i < water.length; i++) ctx.lineTo(water[i].x, water[i].y);
+        ctx.closePath();
+      }
+      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+    }
+
     // Use BuildingPainter for 3D rendering
     BuildingPainter.paint(ctx, processedBuildings, Palette.roof, Palette.dark, 0.5, this.scale);
+    if (didWaterClip) ctx.restore();
+    if (didClip) ctx.restore();
   }
 
   drawFarmDetails(ctx, farm, cellShape) {
@@ -2473,8 +4656,9 @@ class CityRenderer {
       ctx.clip();
       
       // Draw furrows
+      const safeScale = Math.max(1e-3, this.scale || 1);
       ctx.strokeStyle = Palette.dark + '40'; // Semi-transparent dark lines
-      ctx.lineWidth = 0.3 / this.scale;
+      ctx.lineWidth = Math.max(0.2, 0.3 / safeScale);
       
       for (const furrow of farm.furrows) {
         ctx.beginPath();
@@ -2488,10 +4672,227 @@ class CityRenderer {
   }
 
   drawGate(ctx, gate) {
+    const safeScale = Math.max(1e-3, this.scale || 1);
     ctx.beginPath();
-    ctx.arc(gate.x, gate.y, 2 / this.scale, 0, Math.PI * 2);
+    ctx.arc(gate.x, gate.y, Math.min(10, 2 / safeScale), 0, Math.PI * 2);
     ctx.fillStyle = Palette.light;
     ctx.fill();
+  }
+  
+  drawBridges(ctx, bridges) {
+    // Stone vs wooden style depending on canal/river type
+    const isCanal = this.model && this.model.riverType === 'canal';
+    const streetW = (StateManager.streetWidth || 2.0);
+    const safeScale = Math.max(1e-3, this.scale || 1);
+    let deckW = (isCanal ? 1.1 : 1.4) * streetW / safeScale;
+    deckW = Math.min(deckW, 200); // cap absurd widths
+    const outlineW = Math.min(deckW * (isCanal ? 0.18 : 0.32), 50);
+    const plankSpacing = Math.max(1.2 / safeScale, deckW * 0.5);
+    const abutLen = Math.max(1.5 / safeScale, deckW * (isCanal ? 0.5 : 0.7));
+
+    ctx.save();
+    ctx.lineCap = 'round';
+
+    if (isCanal) {
+      // Stone bridge: filled deck with subtle arch shadows
+      for (const seg of bridges) {
+        const a = seg[0] || seg.a, b = seg[1] || seg.b; if (!a || !b) continue;
+        const vx=b.x-a.x, vy=b.y-a.y; const len=Math.hypot(vx,vy)||1e-6; const ux=vx/len, uy=vy/len; const nx=-uy, ny=ux;
+        // Deck fill
+        ctx.fillStyle = '#C8C5BE';
+        ctx.beginPath();
+        ctx.moveTo(a.x - nx*deckW*0.5, a.y - ny*deckW*0.5);
+        ctx.lineTo(b.x - nx*deckW*0.5, b.y - ny*deckW*0.5);
+        ctx.lineTo(b.x + nx*deckW*0.5, b.y + ny*deckW*0.5);
+        ctx.lineTo(a.x + nx*deckW*0.5, a.y + ny*deckW*0.5);
+        ctx.closePath(); ctx.fill();
+        // Outline
+        ctx.strokeStyle = Palette.dark + '90'; ctx.lineWidth = outlineW; ctx.beginPath();
+        ctx.moveTo(a.x - nx*deckW*0.5, a.y - ny*deckW*0.5);
+        ctx.lineTo(b.x - nx*deckW*0.5, b.y - ny*deckW*0.5);
+        ctx.lineTo(b.x + nx*deckW*0.5, b.y + ny*deckW*0.5);
+        ctx.lineTo(a.x + nx*deckW*0.5, a.y + ny*deckW*0.5); ctx.closePath(); ctx.stroke();
+        // Simple arch hints (three semi-elliptic shadows)
+        const arches = Math.max(1, Math.floor(len / (deckW*2.2)));
+        ctx.strokeStyle = Palette.dark + '40'; ctx.lineWidth = Math.max(0.6/safeScale, outlineW*0.5);
+        for (let i=0;i<arches;i++){
+          const t = (i+0.5)/arches; const cx = a.x + vx*t; const cy = a.y + vy*t; const w = deckW*0.6; const h = deckW*0.35;
+          // Draw arch as half-ellipse line across deck
+          ctx.beginPath();
+          for (let k=0;k<=8;k++){
+            const ang = Math.PI * (k/8); // 0..PI
+            const ex = cx + nx*(Math.cos(ang)*w*0.5) + ux*(Math.sin(ang)*w*0.05);
+            const ey = cy + ny*(Math.cos(ang)*w*0.5) + uy*(Math.sin(ang)*h*0.4);
+            if(k===0) ctx.moveTo(ex,ey); else ctx.lineTo(ex,ey);
+          }
+          ctx.stroke();
+        }
+      }
+    } else {
+      // Wooden style (existing behavior)
+      ctx.strokeStyle = Palette.paper;
+      ctx.lineWidth = Math.min(deckW, 100);
+      for (const seg of bridges) {
+        const a = seg[0] || seg.a, b = seg[1] || seg.b; if (!a || !b) continue;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      ctx.strokeStyle = Palette.dark + '80';
+      ctx.lineWidth = Math.min(outlineW, 50);
+      for (const seg of bridges) {
+        const a = seg[0] || seg.a, b = seg[1] || seg.b; if (!a || !b) continue;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      for (const seg of bridges) {
+        const a = seg[0] || seg.a, b = seg[1] || seg.b; if (!a || !b) continue;
+        const vx=b.x-a.x, vy=b.y-a.y; const len=Math.hypot(vx,vy)||1e-6; const ux=vx/len, uy=vy/len; const nx=-uy, ny=ux;
+        ctx.strokeStyle = Palette.dark + '60';
+        ctx.lineWidth = Math.max(Math.min(outlineW*1.1, 50), 0.6/safeScale);
+        const drawBand = (p)=>{
+          const c0x = p.x - ux*abutLen*0.5, c0y = p.y - uy*abutLen*0.5;
+          const c1x = p.x + ux*abutLen*0.5, c1y = p.y + uy*abutLen*0.5;
+          ctx.beginPath(); ctx.moveTo(c0x + nx*deckW*0.5, c0y + ny*deckW*0.5); ctx.lineTo(c1x + nx*deckW*0.5, c1y + ny*deckW*0.5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(c0x - nx*deckW*0.5, c0y - ny*deckW*0.5); ctx.lineTo(c1x - nx*deckW*0.5, c1y - ny*deckW*0.5); ctx.stroke();
+        };
+        drawBand(a); drawBand(b);
+        ctx.strokeStyle = Palette.dark + '30';
+        ctx.lineWidth = Math.max(0.6/safeScale, Math.min(outlineW*0.6, 50));
+        const n = Math.max(2, Math.min(500, Math.floor(len / plankSpacing)));
+        for (let i=1;i<n;i++){
+          const t = i/n; const px = a.x + vx*t, py = a.y + vy*t;
+            ctx.beginPath(); ctx.moveTo(px - nx*deckW*0.5, py - ny*deckW*0.5); ctx.lineTo(px + nx*deckW*0.5, py + ny*deckW*0.5); ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+  
+  drawPiers(ctx, piers) {
+    if (!piers || piers.length === 0) return;
+    
+    const safeScale = Math.max(1e-3, this.scale || 1);
+    
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    for (const pier of piers) {
+      const {start, end, width} = pier;
+      if (!start || !end) continue;
+      
+      const vx = end.x - start.x;
+      const vy = end.y - start.y;
+      const len = Math.hypot(vx, vy) || 1e-6;
+      const ux = vx / len, uy = vy / len;
+      const nx = -uy, ny = ux;
+      
+      const w = Math.min(width / safeScale, 50);
+      
+      // Wooden pier deck
+      ctx.fillStyle = '#8B7355';
+      ctx.beginPath();
+      ctx.moveTo(start.x - nx * w * 0.5, start.y - ny * w * 0.5);
+      ctx.lineTo(end.x - nx * w * 0.5, end.y - ny * w * 0.5);
+      ctx.lineTo(end.x + nx * w * 0.5, end.y + ny * w * 0.5);
+      ctx.lineTo(start.x + nx * w * 0.5, start.y + ny * w * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Dark outline
+      ctx.strokeStyle = Palette.dark + '80';
+      ctx.lineWidth = Math.max(0.4 / safeScale, w * 0.15);
+      ctx.beginPath();
+      ctx.moveTo(start.x - nx * w * 0.5, start.y - ny * w * 0.5);
+      ctx.lineTo(end.x - nx * w * 0.5, end.y - ny * w * 0.5);
+      ctx.lineTo(end.x + nx * w * 0.5, end.y + ny * w * 0.5);
+      ctx.lineTo(start.x + nx * w * 0.5, start.y + ny * w * 0.5);
+      ctx.closePath();
+      ctx.stroke();
+      
+      // Planks
+      ctx.strokeStyle = Palette.dark + '30';
+      ctx.lineWidth = Math.max(0.3 / safeScale, w * 0.08);
+      const plankSpacing = Math.max(1.0 / safeScale, w * 0.6);
+      const numPlanks = Math.floor(len / plankSpacing);
+      for (let i = 1; i < numPlanks; i++) {
+        const t = i / numPlanks;
+        const px = start.x + vx * t;
+        const py = start.y + vy * t;
+        ctx.beginPath();
+        ctx.moveTo(px - nx * w * 0.5, py - ny * w * 0.5);
+        ctx.lineTo(px + nx * w * 0.5, py + ny * w * 0.5);
+        ctx.stroke();
+      }
+    }
+    
+    ctx.restore();
+  }
+  
+  drawWaterBodies(ctx, waterBodies) {
+    ctx.save();
+    
+    // Unified water color - all water uses same color for seamless blending
+    const waterColor = '#A8D5E2';
+    
+    // Draw all water bodies with FILL ONLY (no strokes) for seamless blending
+    for (let wi = 0; wi < waterBodies.length; wi++) {
+      const water = waterBodies[wi];
+      if (!water || water.length < 3) continue;
+      
+      // Use same color for ALL water types (coast, river, canal, pond) for consistent appearance
+      ctx.fillStyle = waterColor;
+      
+      // Draw water polygon with FILL ONLY (no stroke = seamless blending)
+      ctx.beginPath();
+      ctx.moveTo(water[0].x, water[0].y);
+      for (let i = 1; i < water.length; i++) {
+        ctx.lineTo(water[i].x, water[i].y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      // NO stroke() call = seamless blending where water bodies meet
+    }
+    
+    ctx.restore();
+  }
+  
+  calculateArea(polygon) {
+    let area = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const p1 = polygon[i];
+      const p2 = polygon[(i + 1) % polygon.length];
+      area += (p1.x * p2.y - p2.x * p1.y);
+    }
+    return Math.abs(area / 2);
+  }
+  
+  getBoundsOf(polygon) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of polygon) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+    return { minX, minY, maxX, maxY };
+  }
+  
+  getPolygonCenter(polygon) {
+    let cx = 0, cy = 0;
+    for (const p of polygon) {
+      cx += p.x;
+      cy += p.y;
+    }
+    return new Point(cx / polygon.length, cy / polygon.length);
+  }
+  
+  getPolygonRadius(polygon) {
+    const center = this.getPolygonCenter(polygon);
+    let maxDist = 0;
+    for (const p of polygon) {
+      const dist = Point.distance(p, center);
+      if (dist > maxDist) maxDist = dist;
+    }
+    return maxDist;
   }
 
   drawLabel(ctx, patch, labelText) {
@@ -3540,7 +5941,7 @@ Random.choice = function(array) {
 };
 
 // ============================================================================
-// View Architecture (from MFCG)
+// View Architecture 
 // ============================================================================
 
 /**
@@ -3663,15 +6064,52 @@ class PatchView {
     
     ctx.save();
     
+    // Use inset shape if available (respects walls/water), otherwise use full patch shape
+    const shapeToRender = (patch.availableShape && patch.availableShape.length >= 3)
+      ? patch.availableShape
+      : patch.shape;
+    
+    // If we have a wall polygon, clip INSIDE for inside wards and OUTSIDE for outside wards
+    const wall = this.settings.interiorClip;
+    let didClip = false;
+    if (Array.isArray(wall) && wall.length >= 3) {
+      didClip = true;
+      ctx.save();
+      ctx.beginPath();
+      if (patch.inside) {
+        // Interior clip
+        ctx.moveTo(wall[0].x, wall[0].y);
+        for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
+        ctx.closePath();
+        ctx.clip();
+      } else {
+        // Exterior clip: big rect minus wall (evenodd)
+        const M = 1e5; // large extent to cover canvas
+        ctx.moveTo(-M, -M);
+        ctx.lineTo(M, -M);
+        ctx.lineTo(M, M);
+        ctx.lineTo(-M, M);
+        ctx.closePath();
+        ctx.moveTo(wall[0].x, wall[0].y);
+        for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
+        ctx.closePath();
+        if (ctx.clip instanceof Function) {
+          try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+        } else {
+          ctx.clip();
+        }
+      }
+    }
+
     // Fill the patch with ward color
     ctx.fillStyle = patch.color || this.palette.light;
     ctx.strokeStyle = this.palette.dark;
     ctx.lineWidth = showCellOutlines ? 0.5 : 0;
     
     ctx.beginPath();
-    ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
-    for (let i = 1; i < patch.shape.length; i++) {
-      ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+    ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+    for (let i = 1; i < shapeToRender.length; i++) {
+      ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
     }
     ctx.closePath();
     ctx.fill();
@@ -3684,7 +6122,6 @@ class PatchView {
       // Apply building gap by shrinking polygons
       // IMPORTANT: Use !== undefined check because gap can be 0
       const gap = (this.settings.buildingGap !== undefined) ? this.settings.buildingGap : 1.8;
-      console.log('[PatchView] Rendering buildings with gap:', gap, 'from settings:', this.settings.buildingGap, 'building count:', buildingShapes.length);
       let processedBuildings;
       if (gap > 0) {
         processedBuildings = buildingShapes.map(building => {
@@ -3713,6 +6150,9 @@ class PatchView {
     if (showFarms && patch.type === 'farm' && patch.furrows) {
       this.drawFarmDetails(ctx, patch);
     }
+    
+    // Restore after optional clip
+    if (didClip) ctx.restore();
     
     ctx.restore();
   }
@@ -4304,7 +6744,9 @@ class StateManager {
   static seed = -1;
   static plazaNeeded = true;
   static citadelNeeded = true;
+  static urbanCastle = false; // Castle inside the city walls
   static wallsNeeded = true;
+  static gatesNeeded = true;
   static gridChaos = 0.4;
   static sizeChaos = 0.6;
   static cellChaos = 0.0;
@@ -4316,11 +6758,18 @@ class StateManager {
   static showCellOutlines = false;
   static showBuildings = true;
   static showStreets = true;
+  static showWater = false; // Show water bodies (coast/river)
+  static coast = 0;         // 1 to force coast, 0 to disable
+  static river = 0;         // 1 to enable river (independent)
+  static canal = 0;         // 1 to enable canal (independent)
+  static riverType = 'none'; // back-compat: 'none' | 'river' | 'canal' | 'both'
+  static riverMeander = 0.5; // 0-1: micro-meander noise intensity (0=pure sine, 1=max chaos)
+  static lotsMode = false;  // Pack parcels like Lots display mode
   static zoom = 1.0;
   static plazaChance = 0.3; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
   static flythroughActive = false; // Flythrough camera mode
-  static showTrees = false; // Render trees in parks
+  static showTrees = false; // Render trees in parks (greens)
   static cameraOffsetX = 0; // Camera pan X offset
   static cameraOffsetY = 0; // Camera pan Y offset
   static view3D = false;     // Toggle between 2D and 3D rendering
@@ -4349,6 +6798,45 @@ class StateManager {
         StateManager.seed = seed;
       }
     }
+
+    const bool = (v) => v === '1' || v === 'true' || v === 'yes';
+    if (params.has('citadel')) StateManager.citadelNeeded = bool(params.get('citadel'));
+    if (params.has('urban_castle')) StateManager.urbanCastle = bool(params.get('urban_castle'));
+    if (params.has('plaza')) StateManager.plazaNeeded = bool(params.get('plaza'));
+    if (params.has('temple')) {
+      // temple simply increases chance of cathedral-like ward
+      StateManager.templeBoost = bool(params.get('temple')) ? 1 : 0;
+    }
+    if (params.has('walls')) StateManager.wallsNeeded = bool(params.get('walls'));
+    if (params.has('gates')) StateManager.gatesNeeded = bool(params.get('gates'));
+    if (params.has('coast')) StateManager.coast = bool(params.get('coast')) ? 1 : 0;
+    if (params.has('river')) StateManager.river = bool(params.get('river')) ? 1 : 0;
+    if (params.has('canal')) StateManager.canal = bool(params.get('canal')) ? 1 : 0;
+    if (params.has('riverType')) {
+      const rt = params.get('riverType');
+      if (rt === 'river' || rt === 'canal' || rt === 'none' || rt === 'both') StateManager.riverType = rt;
+    }
+    // Auto-determine riverType from individual flags
+    if (StateManager.river === 1 && StateManager.canal === 1) {
+      StateManager.riverType = 'both';
+    } else if (StateManager.river === 1) {
+      StateManager.riverType = 'river';
+    } else if (StateManager.canal === 1) {
+      StateManager.riverType = 'canal';
+    } else {
+      StateManager.riverType = 'none';
+    }
+    // Explicit water toggle param support
+    if (params.has('water')) StateManager.showWater = bool(params.get('water'));
+    // If URL forces any water, auto-enable Show Water
+    if ((StateManager.coast === 1 || StateManager.river === 1 || StateManager.canal === 1) && !params.has('water')) {
+      StateManager.showWater = true;
+    }
+    if (params.has('greens')) StateManager.showTrees = bool(params.get('greens'));
+    if (params.has('shantytown')) StateManager.shantytown = bool(params.get('shantytown'));
+    if (params.has('lots')) StateManager.lotsMode = bool(params.get('lots'));
+    const display = params.get('display');
+    if (display && display.toLowerCase() === 'lots') StateManager.lotsMode = true;
   }
 
   static pushParams() {
@@ -4360,6 +6848,19 @@ class StateManager {
     const url = new URL(window.location.href);
     url.searchParams.set('size', StateManager.size);
     url.searchParams.set('seed', StateManager.seed);
+    url.searchParams.set('citadel', StateManager.citadelNeeded ? 1 : 0);
+    url.searchParams.set('urban_castle', StateManager.urbanCastle ? 1 : 0);
+    url.searchParams.set('plaza', StateManager.plazaNeeded ? 1 : 0);
+    url.searchParams.set('walls', StateManager.wallsNeeded ? 1 : 0);
+    url.searchParams.set('gates', StateManager.gatesNeeded ? 1 : 0);
+    url.searchParams.set('coast', StateManager.coast ? 1 : 0);
+    url.searchParams.set('river', StateManager.river ? 1 : 0);
+    url.searchParams.set('canal', StateManager.canal ? 1 : 0);
+    url.searchParams.set('riverType', StateManager.riverType);
+    url.searchParams.set('water', StateManager.showWater ? 1 : 0);
+    url.searchParams.set('greens', StateManager.showTrees ? 1 : 0);
+    url.searchParams.set('shantytown', StateManager.shantytown ? 1 : 0);
+    url.searchParams.set('lots', StateManager.lotsMode ? 1 : 0);
     
     window.history.replaceState(
       { size: StateManager.size, seed: StateManager.seed },
@@ -4390,6 +6891,11 @@ class TownGenerator {
       container.appendChild(this.canvas);
     }
     
+    // Ensure URL params are respected at startup
+    if (typeof StateManager.pullParams === 'function') {
+      StateManager.pullParams();
+    }
+
     this.resize();
     window.addEventListener('resize', () => this.resize());
     
@@ -4534,7 +7040,6 @@ class TownGenerator {
     
     this.model = CityModel.instance;
     this.renderer = new CityRenderer(this.canvas, this.model);
-    // Create flythrough camera with renderer reference for first-person rendering
     this.flythroughCamera = new FlythroughCamera(this.model, this.renderer);
     // Clear cached trees when regenerating
     this.renderer.globalTrees = null;
