@@ -73,9 +73,7 @@ class Point {
 
   static distance(p1, p2, caller = 'unknown') {
     if (!p1 || !p2 || p1.x === undefined || p1.y === undefined || p2.x === undefined || p2.y === undefined) {
-      // Report the error loudly with context so it can be fixed
       console.error(`[Point.distance] Invalid points from ${caller}:`, p1, p2);
-      // Still return a value so upstream logic can continue while issue is investigated
       return Infinity;
     }
     const dx = p1.x - p2.x;
@@ -105,7 +103,7 @@ class ArcGenerator {
   // Find circle passing through 3 points
   static getCircle(p0, v0, p1, v1) {
     // p0, p1 are points, v0, v1 are direction vectors from those points
-    // Returns {c: center, r: radius} or null
+    // Returns {c: centre, r: radius} or null
     const dx1 = v0.x, dy1 = v0.y;
     const dx2 = v1.x, dy2 = v1.y;
     
@@ -162,7 +160,7 @@ class Triangle {
     this.p2 = s > 0 ? p2 : p3;
     this.p3 = s > 0 ? p3 : p2;
     
-    // Calculate circumcenter using perpendicular bisector intersection
+    // Calculate circumcentre using perpendicular bisector intersection
     const x1 = (this.p1.x + this.p2.x) / 2;
     const y1 = (this.p1.y + this.p2.y) / 2;
     const x2 = (this.p2.x + this.p3.x) / 2;
@@ -311,7 +309,7 @@ class Voronoi {
       }
     }
     
-    // Sort triangles by angle of their circumcenters around seed point
+    // Sort triangles by angle of their circumcentres around seed point
     r.vertices.sort((v1, v2) => {
       const x1 = v1.c.x - p.x;
       const y1 = v1.c.y - p.y;
@@ -486,15 +484,15 @@ class Polygon {
 
   static centroid(polygon) {
     if (!polygon || polygon.length === 0) return {x: 0, y: 0};
-    const center = polygon.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-    center.x /= polygon.length;
-    center.y /= polygon.length;
-    return center;
+    const centre = polygon.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    centre.x /= polygon.length;
+    centre.y /= polygon.length;
+    return centre;
   }
   
   /**
    * Laplacian smoothing for closed polygons
-   * Each vertex is averaged with its neighbors, except those in excludePoints
+  * Each vertex is averaged with its neighbours, except those in excludePoints
    * @param {Point[]} polygon - The polygon to smooth
    * @param {Point[]} excludePoints - Points to keep fixed (gates, etc)
    * @param {number} iterations - Number of smoothing passes
@@ -518,7 +516,7 @@ class Polygon {
         )) {
           smoothed.push(curr);
         } else {
-          // Average with neighbors
+          // Average with neighbours
           const prev = result[(i + len - 1) % len];
           const next = result[(i + 1) % len];
           const avgX = (prev.x + next.x) / 2;
@@ -569,7 +567,7 @@ class Polygon {
         )) {
           smoothed.push(curr);
         } else {
-          // Average with neighbors
+          // Average with neighbours
           const prev = result[i - 1];
           const next = result[i + 1];
           const avgX = (prev.x + next.x) / 2;
@@ -766,9 +764,14 @@ class Ward {
       }
       // Subtract water polygons from available area so no geometry is placed over water
       if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+        const beforeClip = insetShape.length;
         for (const water of this.model.waterBodies) {
           if (water && water.length >= 3) {
+            const before = insetShape.length;
             insetShape = this.clipOutside(insetShape, water);
+            if (insetShape.length !== before) {
+              // Debug (suppressed): water clipped ward shape from before to insetShape.length
+            }
           }
         }
       }
@@ -798,9 +801,14 @@ class Ward {
       result = this.clipInside(result, this.model.borderShape);
     }
     if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      // Debug (suppressed): fallback path clipping against water bodies
       for (const water of this.model.waterBodies) {
         if (water && water.length >= 3) {
+          const before = result.length;
           result = this.clipOutside(result, water);
+          if (result.length !== before) {
+            // Debug (suppressed): water clipped fallback ward from before to result.length
+          }
         }
       }
     }
@@ -1080,7 +1088,32 @@ class Ward {
         }
       }
     }
-    // Leave road-edge buildings intact; the renderer will clip visuals against water
+    
+    // Filter out roadBuildings that intersect water bodies - don't generate slivers
+    if (roadBuildings.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      roadBuildings = roadBuildings.filter(building => {
+        // Check if building centre is in water
+        if (!building || building.length < 3) return false;
+        const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+        center.x /= building.length;
+        center.y /= building.length;
+        
+        // Point-in-polygon test against each water body
+        for (const water of this.model.waterBodies) {
+          if (!water || water.length < 3) continue;
+          let inside = false;
+          for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+            const xi = water[i].x, yi = water[i].y;
+            const xj = water[j].x, yj = water[j].y;
+            const intersect = ((yi > center.y) !== (yj > center.y)) && 
+                            (center.x < (xj - xi) * (center.y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+          }
+          if (inside) return false; // Building centre is in water - reject it
+        }
+        return true; // Building doesn't intersect water
+      });
+    }
 
     // Recursively subdivide ward into building plots (like original Haxe)
     const lots = StateManager.lotsMode === true;
@@ -1090,23 +1123,198 @@ class Ward {
     
     // Random chance to create an open piazza instead of buildings
     if (!lots && Random.chance(StateManager.plazaChance)) {
-      // Create piazza with buildings around perimeter and empty center
+      // Create piazza with buildings around perimeter and empty centre
       this.geometry = this.createPiazza(availableShape);
     } else {
       // Normal ward with buildings
       const innerBuildings = this.createAlleys(availableShape, minSq, gridChaos, sizeChaos, true);
       this.geometry = roadBuildings.length ? roadBuildings.concat(innerBuildings) : innerBuildings;
     }
+    
+    // Filter buildings: check each vertex, push wet ones out of water AWAY from water centre
+    if (this.geometry && this.geometry.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      const pointInPoly = (pt, poly) => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          const intersect = ((yi > pt.y) !== (yj > pt.y)) && 
+                          (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      };
+      
+      if (!this.model.waterfrontBuildings) this.model.waterfrontBuildings = [];
+
+      // Cache water polygon metadata for faster queries
+      if (!this.model._waterCache || this.model._waterCache.length !== this.model.waterBodies.length) {
+        this.model._waterCache = this.model.waterBodies
+          .filter(w => w && w.length >= 3)
+          .map(poly => {
+            // AABB
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
+            // Precompute edges and PIP helpers
+            const edges = [];
+            for (let i = 0; i < poly.length; i++) {
+              const a = poly[i];
+              const b = poly[(i + 1) % poly.length];
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const len2 = dx*dx + dy*dy;
+              const slopeInv = Math.abs(b.y - a.y) > 1e-12 ? (b.x - a.x) / (b.y - a.y) : 0;
+              edges.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, dx, dy, len2, slopeInv });
+            }
+            return { poly, minX, minY, maxX, maxY, edges };
+          });
+      }
+
+      const aabbOverlap = (a, b) => !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+      const pipFast = (pt, meta) => {
+        if (pt.x < meta.minX || pt.x > meta.maxX || pt.y < meta.minY || pt.y > meta.maxY) return false;
+        let inside = false;
+        const y = pt.y;
+        for (const e of meta.edges) {
+          const yi = e.ay, yj = e.by;
+          // ((yi > y) !== (yj > y))
+          const aboveDiff = ((yi > y) !== (yj > y));
+          if (aboveDiff) {
+            const xInt = e.ax + e.slopeInv * (y - yi);
+            if (pt.x < xInt) inside = !inside;
+          }
+        }
+        return inside;
+      };
+      const nearestProjectionMeta = (p, meta) => {
+        let minD = Infinity, projPt = p, eDX = 1, eDY = 0;
+        for (const e of meta.edges) {
+          if (e.len2 < 1e-12) continue;
+          let t = ((p.x - e.ax) * e.dx + (p.y - e.ay) * e.dy) / e.len2;
+          t = Math.max(0, Math.min(1, t));
+          const px = e.ax + t * e.dx;
+          const py = e.ay + t * e.dy;
+          const d = Math.hypot(p.x - px, p.y - py);
+          if (d < minD) { minD = d; projPt = new Point(px, py); eDX = e.dx; eDY = e.dy; }
+        }
+        return { projPt, eDX, eDY, minD };
+      };
+
+      const newGeometry = [];
+      for (const building of this.geometry) {
+        if (!building || building.length < 3) continue;
+
+        // Building AABB
+        let bminX = Infinity, bminY = Infinity, bmaxX = -Infinity, bmaxY = -Infinity;
+        for (const p of building) { if (p.x < bminX) bminX = p.x; if (p.y < bminY) bminY = p.y; if (p.x > bmaxX) bmaxX = p.x; if (p.y > bmaxY) bmaxY = p.y; }
+        const bAABB = { minX: bminX, minY: bminY, maxX: bmaxX, maxY: bmaxY };
+
+        // Collect candidate waters by AABB overlap (with small margin)
+        const margin = 1.0;
+        const expanded = { minX: bminX - margin, minY: bminY - margin, maxX: bmaxX + margin, maxY: bmaxY + margin };
+        const candidates = [];
+        for (const meta of this.model._waterCache) {
+          if (aabbOverlap(expanded, meta)) candidates.push(meta);
+        }
+
+        if (candidates.length === 0) {
+          newGeometry.push(building); // nowhere near water
+          continue;
+        }
+
+        // Pick the water meta with the most vertices inside (best overlap)
+        const totalVerts = building.length;
+        let bestMeta = null; let bestInside = 0;
+        for (const meta of candidates) {
+          let insideC = 0;
+          // Early skip if AABB fully outside
+          for (const v of building) { if (pipFast(v, meta)) insideC++; }
+          if (insideC > bestInside) { bestInside = insideC; bestMeta = meta; }
+          if (insideC >= totalVerts) break; // fully inside, can't get better
+        }
+
+        if (!bestMeta || bestInside === 0) {
+          newGeometry.push(building); // no overlap after all
+          continue;
+        }
+
+        // Elide if all or all-but-one vertices are inside this water
+        if (bestInside >= totalVerts - 1) {
+          continue;
+        }
+
+        // Translate whole building using displacements of wet vertices to nearest boundary
+        let sumDx = 0, sumDy = 0, wetCount = 0;
+        let nearestOnBoundary = null; let nearestEdge = { dx: 1, dy: 0 }; let nearestDist = Infinity;
+        for (const v of building) {
+          if (!pipFast(v, bestMeta)) continue;
+          const { projPt, eDX, eDY, minD } = nearestProjectionMeta(v, bestMeta);
+          sumDx += projPt.x - v.x; sumDy += projPt.y - v.y; wetCount++;
+          if (minD < nearestDist) { nearestDist = minD; nearestOnBoundary = projPt; nearestEdge = { dx: eDX, dy: eDY }; }
+        }
+
+        // If centroid is in water but no vertex was (thin case)
+        if (wetCount === 0) {
+          const center = building.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+          center.x /= totalVerts; center.y /= totalVerts;
+          if (center.x >= bestMeta.minX && center.x <= bestMeta.maxX && center.y >= bestMeta.minY && center.y <= bestMeta.maxY && pipFast(center, bestMeta)) {
+            const { projPt, eDX, eDY } = nearestProjectionMeta(center, bestMeta);
+            sumDx += projPt.x - center.x; sumDy += projPt.y - center.y; wetCount = 1;
+            nearestOnBoundary = projPt; nearestEdge = { dx: eDX, dy: eDY };
+          }
+        }
+
+        let tx = 0, ty = 0; if (wetCount > 0) { tx = sumDx / wetCount; ty = sumDy / wetCount; }
+        const elen = Math.hypot(nearestEdge.dx, nearestEdge.dy) || 1;
+        let nx = -nearestEdge.dy / elen; let ny = nearestEdge.dx / elen; const eps = 0.8;
+        const pTest = new Point(nearestOnBoundary.x + nx * eps, nearestOnBoundary.y + ny * eps);
+        if (pipFast(pTest, bestMeta)) { nx = -nx; ny = -ny; }
+
+        const adjustedBuilding = building.map(p => new Point(p.x + tx + nx * eps, p.y + ty + ny * eps));
+        newGeometry.push(adjustedBuilding);
+
+        // Waterfront feature
+        if (nearestOnBoundary) {
+          const edgeLen = Math.hypot(nearestEdge.dx, nearestEdge.dy);
+          if (edgeLen > 0.5) {
+            const ux = nearestEdge.dx / edgeLen, uy = nearestEdge.dy / edgeLen;
+            const wx = -nx, wy = -ny; const mid = nearestOnBoundary;
+            const featureType = Random.int(0, 2);
+            if (!this.model.waterfrontBuildings) this.model.waterfrontBuildings = [];
+            if (featureType === 0) {
+              const w = 2.0, d = 2.4;
+              const a = new Point(mid.x - ux*w*0.5, mid.y - uy*w*0.5);
+              const b = new Point(mid.x + ux*w*0.5, mid.y + uy*w*0.5);
+              const c = new Point(b.x + wx*d, b.y + wy*d);
+              const dpt = new Point(a.x + wx*d, a.y + wy*d);
+              this.model.waterfrontBuildings.push({feature:'dock', geometry:[a,b,c,dpt]});
+            } else if (featureType === 1) {
+              const post = new Point(mid.x + wx*1.4, mid.y + wy*1.4);
+              this.model.waterfrontBuildings.push({feature:'post', geometry:post});
+            } else {
+              const boatCenter = new Point(mid.x + wx*2.0, mid.y + wy*2.0);
+              const boat = [
+                new Point(boatCenter.x - ux*1.2,  boatCenter.y - uy*1.2),
+                new Point(boatCenter.x + ux*1.2,  boatCenter.y + uy*1.2),
+                new Point(boatCenter.x + ux*0.8 + wx*0.6, boatCenter.y + uy*0.8 + wy*0.6),
+                new Point(boatCenter.x - ux*0.8 + wx*0.6, boatCenter.y - uy*0.8 + wy*0.6)
+              ];
+              this.model.waterfrontBuildings.push({feature:'boat', geometry:boat});
+            }
+          }
+        }
+      }
+      this.geometry = newGeometry;
+    }
   }
 
   createPiazza(polygon) {
-    // Create ring of buildings around the perimeter with open center
+    // Create ring of buildings around the perimeter with open centre
     const buildings = [];
     const minSq = 20;
     const gridChaos = this.model.gridChaos || 0.2;
     const sizeChaos = this.model.sizeChaos || 0.3;
     
-    // Calculate center
+    // Calculate centre
     const center = polygon.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
     center.x /= polygon.length;
     center.y /= polygon.length;
@@ -1410,7 +1618,7 @@ class Castle extends Ward {
       }
     }
     
-    // Find gate position (towards center of city)
+    // Find gate position (towards centre of city)
     const cityCenter = new Point(0, 0);
     let gateVertex = innerWall[0];
     let maxDist = -Infinity;
@@ -1427,7 +1635,143 @@ class Castle extends Ward {
     const keep = this.shrinkPolygon(innerWall, 8);
     const buildings = this.createAlleys(keep, 15, 0.1, 0.1, Random.chance(0.4));
     
-    this.geometry = [...buildings, ...towers];
+    this.geometry = buildings;
+    this.towers = towers;
+
+    // Ensure castles respect water like other wards: clip walls, adjust/elide towers and keep buildings
+    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      // Reuse or build water cache
+      if (!this.model._waterCache || this.model._waterCache.length !== this.model.waterBodies.length) {
+        this.model._waterCache = this.model.waterBodies
+          .filter(w => w && w.length >= 3)
+          .map(poly => {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
+            const edges = [];
+            for (let i = 0; i < poly.length; i++) {
+              const a = poly[i];
+              const b = poly[(i + 1) % poly.length];
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const len2 = dx*dx + dy*dy;
+              const slopeInv = Math.abs(b.y - a.y) > 1e-12 ? (b.x - a.x) / (b.y - a.y) : 0;
+              edges.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, dx, dy, len2, slopeInv });
+            }
+            return { poly, minX, minY, maxX, maxY, edges };
+          });
+      }
+
+      const aabbOverlap = (a, b) => !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+      const pipFast = (pt, meta) => {
+        if (pt.x < meta.minX || pt.x > meta.maxX || pt.y < meta.minY || pt.y > meta.maxY) return false;
+        let inside = false; const y = pt.y;
+        for (const e of meta.edges) {
+          const yi = e.ay, yj = e.by; if (((yi > y) !== (yj > y))) {
+            const xInt = e.ax + e.slopeInv * (y - yi); if (pt.x < xInt) inside = !inside;
+          }
+        }
+        return inside;
+      };
+      const nearestProjectionMeta = (p, meta) => {
+        let minD = Infinity, projPt = p, eDX = 1, eDY = 0;
+        for (const e of meta.edges) {
+          if (e.len2 < 1e-12) continue;
+          let t = ((p.x - e.ax) * e.dx + (p.y - e.ay) * e.dy) / e.len2;
+          t = Math.max(0, Math.min(1, t));
+          const px = e.ax + t * e.dx; const py = e.ay + t * e.dy;
+          const d = Math.hypot(p.x - px, p.y - py);
+          if (d < minD) { minD = d; projPt = new Point(px, py); eDX = e.dx; eDY = e.dy; }
+        }
+        return { projPt, eDX, eDY, minD };
+      };
+
+      // 1) Clip citadel wall against water so it never renders over water
+      if (this.citadelWall && this.citadelWall.length >= 3) {
+        let wall = this.citadelWall;
+        for (const meta of this.model._waterCache) {
+          const before = wall; // keep ref
+          const clipped = this.clipOutside(wall, meta.poly);
+          if (clipped && clipped.length >= 3) wall = clipped;
+        }
+        this.citadelWall = wall;
+      }
+
+      // Helper to adjust a list of polygons like buildings (no waterfront features for castle)
+      const adjustPolys = (polys) => {
+        const out = [];
+        for (const poly of polys) {
+          if (!poly || poly.length < 3) continue;
+          // AABB
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
+          const margin = 1.0; const expanded = { minX: minX - margin, minY: minY - margin, maxX: maxX + margin, maxY: maxY + margin };
+          const candidates = [];
+          for (const meta of this.model._waterCache) { if (aabbOverlap(expanded, meta)) candidates.push(meta); }
+          if (candidates.length === 0) { out.push(poly); continue; }
+
+          const totalVerts = poly.length; let bestMeta = null; let bestInside = 0;
+          for (const meta of candidates) {
+            let insideC = 0; for (const v of poly) { if (pipFast(v, meta)) insideC++; }
+            if (insideC > bestInside) { bestInside = insideC; bestMeta = meta; }
+            if (insideC >= totalVerts) break;
+          }
+          if (!bestMeta || bestInside === 0) { out.push(poly); continue; }
+          if (bestInside >= totalVerts - 1) { continue; } // elide mostly submerged
+
+          let sumDx = 0, sumDy = 0, wetCount = 0; let nearestOnBoundary = null; let nearestEdge = { dx: 1, dy: 0 }; let nearestDist = Infinity;
+          for (const v of poly) {
+            if (!pipFast(v, bestMeta)) continue;
+            const { projPt, eDX, eDY, minD } = nearestProjectionMeta(v, bestMeta);
+            sumDx += projPt.x - v.x; sumDy += projPt.y - v.y; wetCount++;
+            if (minD < nearestDist) { nearestDist = minD; nearestOnBoundary = projPt; nearestEdge = { dx: eDX, dy: eDY }; }
+          }
+          if (wetCount === 0) { out.push(poly); continue; }
+          const elen = Math.hypot(nearestEdge.dx, nearestEdge.dy) || 1; let nx = -nearestEdge.dy / elen; let ny = nearestEdge.dx / elen; const eps = 0.8;
+          const tx = sumDx / wetCount, ty = sumDy / wetCount;
+          const pTest = new Point(nearestOnBoundary.x + nx * eps, nearestOnBoundary.y + ny * eps);
+          if (pipFast(pTest, bestMeta)) { nx = -nx; ny = -ny; }
+          const moved = poly.map(p => new Point(p.x + tx + nx * eps, p.y + ty + ny * eps));
+          out.push(moved);
+
+          // Add waterfront feature for castle elements as well (dock/post/boat)
+          if (nearestOnBoundary) {
+            if (!this.model.waterfrontBuildings) this.model.waterfrontBuildings = [];
+            const edgeLen = Math.hypot(nearestEdge.dx, nearestEdge.dy);
+            if (edgeLen > 0.5) {
+              const ux = nearestEdge.dx / edgeLen, uy = nearestEdge.dy / edgeLen;
+              // normal points into water if we flip from land normal
+              const wx = -nx, wy = -ny;
+              const mid = nearestOnBoundary;
+              const featureType = Random.int(0, 2);
+              if (featureType === 0) {
+                const w = 2.0, d = 2.4;
+                const a = new Point(mid.x - ux*w*0.5, mid.y - uy*w*0.5);
+                const b = new Point(mid.x + ux*w*0.5, mid.y + uy*w*0.5);
+                const c = new Point(b.x + wx*d, b.y + wy*d);
+                const dpt = new Point(a.x + wx*d, a.y + wy*d);
+                this.model.waterfrontBuildings.push({feature:'dock', geometry:[a,b,c,dpt]});
+              } else if (featureType === 1) {
+                const post = new Point(mid.x + wx*1.4, mid.y + wy*1.4);
+                this.model.waterfrontBuildings.push({feature:'post', geometry:post});
+              } else {
+                const boatCenter = new Point(mid.x + wx*2.0, mid.y + wy*2.0);
+                const boat = [
+                  new Point(boatCenter.x - ux*1.2,  boatCenter.y - uy*1.2),
+                  new Point(boatCenter.x + ux*1.2,  boatCenter.y + uy*1.2),
+                  new Point(boatCenter.x + ux*0.8 + wx*0.6, boatCenter.y + uy*0.8 + wy*0.6),
+                  new Point(boatCenter.x - ux*0.8 + wx*0.6, boatCenter.y - uy*0.8 + wy*0.6)
+                ];
+                this.model.waterfrontBuildings.push({feature:'boat', geometry:boat});
+              }
+            }
+          }
+        }
+        return out;
+      };
+
+      // 2) Adjust castle buildings and towers
+      this.geometry = adjustPolys(this.geometry);
+      this.towers = adjustPolys(this.towers);
+    }
   }
 
   shrinkPolygon(poly, amount) {
@@ -1783,7 +2127,7 @@ class Farm extends Ward {
       };
       const hc = {x:(housing[0].x+housing[1].x+housing[2].x+housing[3].x)/4,y:(housing[0].y+housing[1].y+housing[2].y+housing[3].y)/4};
       if (!inside(hc, land)) {
-        // Move housing towards center
+        // Move housing towards centre
         const dx=center.x-hc.x, dy=center.y-hc.y; housingClipped = housing.map(p=>new Point(p.x+dx*0.5, p.y+dy*0.5));
       }
     }
@@ -1972,7 +2316,8 @@ class CityModel {
     }
     
     const waterCount = this.patches.filter(p => p.waterbody).length;
-    console.log('Water marking: coastNeeded=', this.coastNeeded, 'total patches=', this.patches.length, 'waterbodies=', waterCount);
+    // Key metric: waterbodies count (suppressed verbose details)
+    console.log('Waterbodies:', waterCount);
     
     // Now assign city roles to patches (excluding waterbodies)
     let count = 0;
@@ -2075,7 +2420,7 @@ class CityModel {
       this.faces.push(face);
     }
 
-    // Tag WALL/WATER edges using membership of neighboring faces
+    // Tag WALL/WATER edges using membership of neighbouring faces
     const innerSet = new Set(this.patches.filter(p => p.withinCity).map(p => p.face));
     const waterSet = new Set(this.patches.filter(p => p.waterbody).map(p => p.face));
     for (const face of this.faces) {
@@ -2276,8 +2621,8 @@ class CityModel {
       }
       
       if (waterPoly.length >= 3) {
-        // Heavily smooth coastline to remove ALL sharp Voronoi corners (6-8 passes for very organic look)
-        const smoothPasses = 6 + Random.int(0, 3);
+        // Heavily smooth coastline to remove ALL sharp Voronoi corners (3-5 passes for very organic look)
+        const smoothPasses = 3 + Random.int(0, 3);
         const smoothedCoast = Polygon.smooth(waterPoly, null, smoothPasses);
         this.waterBodies.push(smoothedCoast);
         this.waterBodyTypes.push('coast');
@@ -2429,14 +2774,14 @@ class CityModel {
     // Filter patches to reasonable radius - keep patches within 3x city radius
     const radius = this.cityRadius;
     const maxDist = radius * 3;
-    console.log('Filtering patches: this.center=', this.center, 'radius=', radius, 'maxDist=', maxDist);
+    // Debug (suppressed): filtering patches by radius
     this.patches = this.patches.filter(p => {
       const patchCenter = Polygon.centroid(p.shape);
       const dist = Point.distance(patchCenter, this.center, 'buildWalls/radiusFilter');
       return dist < maxDist;
     });
     
-    console.log('After radius filter: patches=', this.patches.length);
+    // Debug (suppressed): after radius filter count
   }
 
   // Build a river/canal polygon crossing the city; add to waterBodies/waterBodyTypes
@@ -2570,6 +2915,10 @@ class CityModel {
     // Heavily smooth for very organic look without ANY sharp corners (5-7 passes for rivers, 2 for canals)
     const smoothPasses = this.riverType === 'canal' ? 2 : (5 + Random.int(0, 3));
     const result = Polygon.smooth(waterPoly, null, smoothPasses);
+    
+    // Key metric: river/canal polygon built
+    console.log('Water polygon built:', this.riverType, 'points:', waterPoly.length, 'smoothPasses:', smoothPasses);
+    
     this.waterBodies.push(result);
     this.waterBodyTypes.push(this.riverType);
   }
@@ -2793,18 +3142,19 @@ class CityModel {
       return pts;
     };
 
-    // Smooth interior streets and exterior roads
+    // Smooth interior streets and exterior roads FIRST
     if (Array.isArray(this.streets)) {
       this.streets = this.streets.map(p => smoothPath(p, 1, true));
     }
     if (Array.isArray(this.exteriorRoads)) {
       this.exteriorRoads = this.exteriorRoads.map(p => smoothPath(p, 1, true));
     }
-
-    // After computing all roads, compute bridges where streets cross water
+    
+    // THEN compute bridges and extend paths (so bridge connections aren't lost to smoothing)
     this.computeBridgesFromPaths();
     // Add forced river crossing if river splits city
     this.ensureRiverCrossing();
+
     // Add random piers for visual interest
     this.generatePiers();
     // Then tag adjacent DCEL edges as ROAD
@@ -2815,41 +3165,39 @@ class CityModel {
   computeBridgesFromPaths() {
     this.bridges = [];
     if (!this.waterBodies || this.waterBodies.length === 0) {
-      console.log('No water bodies for bridge computation');
+      // No water bodies - no bridges needed
       return;
     }
     const allPaths = [];
     if (Array.isArray(this.streets)) allPaths.push(...this.streets);
     if (Array.isArray(this.exteriorRoads)) allPaths.push(...this.exteriorRoads);
     if (allPaths.length === 0) {
-      console.log('No paths for bridge computation');
+      // No streets/roads to bridge
       return;
     }
 
     const streetW = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
-    const extend = streetW * 1.2; // Extension to ensure bridge touches banks
+    const extend = streetW * 0.5;
+    const minBridgeSpacing = streetW * 4; // Bridges must be this far apart
+    const maxBridgeLength = this.cityRadius ? this.cityRadius * 0.4 : 50; // Reject absurdly long bridges
     
-    // Helper: check if segment crosses water polygon boundary
-    const segmentCrossesWater = (a, b, poly) => {
-      const hits = [];
-      for (let j = 0; j < poly.length; j++) {
-        const c = poly[j], d = poly[(j + 1) % poly.length];
-        const r = {x: b.x - a.x, y: b.y - a.y};
-        const s = {x: d.x - c.x, y: d.y - c.y};
-        const denom = r.x * s.y - r.y * s.x;
-        if (Math.abs(denom) < 1e-9) continue; // parallel
-        const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
-        const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
-        if (t >= -0.05 && t <= 1.05 && u >= -0.01 && u <= 1.01) {
-          hits.push({
-            t: t,
-            point: new Point(a.x + r.x * t, a.y + r.y * t)
-          });
+    // Helper: check if point is in ANY water body
+    const pointInAnyWater = (p) => {
+      for (const poly of this.waterBodies) {
+        if (!poly || poly.length < 3) continue;
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          const intersect = ((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
         }
+        if (inside) return true;
       }
-      return hits;
+      return false;
     };
-
+    
+    // Helper: check if point is in a SPECIFIC water body
     const pointInWater = (p, poly) => {
       let inside = false;
       for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -2860,91 +3208,662 @@ class CityModel {
       }
       return inside;
     };
-
-    const seen = new Set();
-    const key = (p, q) => `${p.x.toFixed(0)},${p.y.toFixed(0)}~${q.x.toFixed(0)},${q.y.toFixed(0)}`;
+    
+    // Helper: find water boundary crossings
+    const findCrossings = (a, b, poly) => {
+      const hits = [];
+      for (let j = 0; j < poly.length; j++) {
+        const c = poly[j], d = poly[(j + 1) % poly.length];
+        const r = {x: b.x - a.x, y: b.y - a.y};
+        const s = {x: d.x - c.x, y: d.y - c.y};
+        const denom = r.x * s.y - r.y * s.x;
+        if (Math.abs(denom) < 1e-9) continue;
+        const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+        const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+        if (t >= -0.01 && t <= 1.01 && u >= 0 && u <= 1) {
+          hits.push({t: t, point: new Point(a.x + r.x * t, a.y + r.y * t)});
+        }
+      }
+      hits.sort((x, y) => x.t - y.t);
+      return hits;
+    };
+    
+    // Helper: check if bridge is too close to existing bridges
+    const tooCloseToOthers = (bridgeStart, bridgeEnd) => {
+      const midpoint = new Point((bridgeStart.x + bridgeEnd.x) / 2, (bridgeStart.y + bridgeEnd.y) / 2);
+      for (const existing of this.bridges) {
+        const existingMid = new Point((existing[0].x + existing[1].x) / 2, (existing[0].y + existing[1].y) / 2);
+        const dist = Math.hypot(midpoint.x - existingMid.x, midpoint.y - existingMid.y);
+        if (dist < minBridgeSpacing) return true;
+      }
+      return false;
+    };
     
     let totalCrossings = 0;
     
-    // For each path, check crossings with each water body
+    // Helper: get water body type by index
+    const getWaterType = (poly) => {
+      const idx = this.waterBodies.indexOf(poly);
+      const type = (this.waterBodyTypes && idx >= 0 && idx < this.waterBodyTypes.length) 
+        ? this.waterBodyTypes[idx] 
+        : 'unknown';
+      // Debug (suppressed): water body type lookup
+      return type;
+    };
+    
+    // For CANALS, find opportunities to connect street endpoints across water FIRST
+    // This handles streets that stop at water edges instead of crossing
+    for (const waterPoly of this.waterBodies) {
+      if (!waterPoly || waterPoly.length < 3) continue;
+      
+      const waterType = getWaterType(waterPoly);
+      if (waterType !== 'canal') continue; // Only for canals initially
+      
+      // Debug (suppressed): checking canal street-to-street opportunities
+      
+      const maxConnectionDist = this.cityRadius ? this.cityRadius * 0.25 : 40;
+      const connectionSearchDist = streetW * 6; // How far from water to look for street endpoints
+      
+      // Find all street endpoints near this water body
+      const nearbyEndpoints = [];
+      
+      for (const path of allPaths) {
+        if (!path || path.length < 2) continue;
+        
+        // Check first point
+        const first = path[0];
+        let minDistFirst = Infinity;
+        for (let j = 0; j < waterPoly.length; j++) {
+          const a = waterPoly[j];
+          const b = waterPoly[(j + 1) % waterPoly.length];
+          const t = Math.max(0, Math.min(1, 
+            ((first.x - a.x) * (b.x - a.x) + (first.y - a.y) * (b.y - a.y)) / 
+            (Math.hypot(b.x - a.x, b.y - a.y) ** 2 || 1)
+          ));
+          const proj = {x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y)};
+          const dist = Math.hypot(proj.x - first.x, proj.y - first.y);
+          minDistFirst = Math.min(minDistFirst, dist);
+        }
+        
+        if (minDistFirst < connectionSearchDist) {
+          nearbyEndpoints.push({point: first, path: path, isFirst: true});
+        }
+        
+        // Check last point
+        const last = path[path.length - 1];
+        let minDistLast = Infinity;
+        for (let j = 0; j < waterPoly.length; j++) {
+          const a = waterPoly[j];
+          const b = waterPoly[(j + 1) % waterPoly.length];
+          const t = Math.max(0, Math.min(1, 
+            ((last.x - a.x) * (b.x - a.x) + (last.y - a.y) * (b.y - a.y)) / 
+            (Math.hypot(b.x - a.x, b.y - a.y) ** 2 || 1)
+          ));
+          const proj = {x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y)};
+          const dist = Math.hypot(proj.x - last.x, proj.y - last.y);
+          minDistLast = Math.min(minDistLast, dist);
+        }
+        
+        if (minDistLast < connectionSearchDist) {
+          nearbyEndpoints.push({point: last, path: path, isFirst: false});
+        }
+      }
+      
+      // Debug (suppressed): endpoints near canal
+      
+      // Try to pair endpoints across water
+      for (let i = 0; i < nearbyEndpoints.length; i++) {
+        for (let j = i + 1; j < nearbyEndpoints.length; j++) {
+          const ep1 = nearbyEndpoints[i];
+          const ep2 = nearbyEndpoints[j];
+          
+          // Don't bridge endpoints from the same path
+          if (ep1.path === ep2.path) continue;
+          
+          const dist = Math.hypot(ep2.point.x - ep1.point.x, ep2.point.y - ep1.point.y);
+          if (dist > maxConnectionDist) continue;
+          
+          // Check if line crosses this water body
+          const mid = {x: (ep1.point.x + ep2.point.x) / 2, y: (ep1.point.y + ep2.point.y) / 2};
+          if (!pointInWater(mid, waterPoly)) continue;
+          
+          // Find where the line crosses water edges
+          const crossings = findCrossings(ep1.point, ep2.point, waterPoly);
+          
+          let bridgeStart, bridgeEnd;
+          
+          if (crossings.length >= 2) {
+            // Use water crossing points
+            bridgeStart = crossings[0].point;
+            bridgeEnd = crossings[crossings.length - 1].point;
+          } else {
+            // Fallback: use street endpoints directly
+            bridgeStart = ep1.point;
+            bridgeEnd = ep2.point;
+          }
+          
+          const bridgeLen = Math.hypot(bridgeEnd.x - bridgeStart.x, bridgeEnd.y - bridgeStart.y);
+          
+          if (bridgeLen <= maxConnectionDist && !tooCloseToOthers(bridgeStart, bridgeEnd)) {
+            // Helper to check if point is inside a polygon
+            const pointInPolygon = (pt, poly) => {
+              let inside = false;
+              for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                const xi = poly[i].x, yi = poly[i].y;
+                const xj = poly[j].x, yj = poly[j].y;
+                const intersect = ((yi > pt.y) !== (yj > pt.y)) && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+              }
+              return inside;
+            };
+            
+            // Check if bridge would hit any buildings
+            let bridgeHitsBuilding = false;
+            if (this.patches) {
+              const numSamples = 20;
+              for (let sample = 0; sample <= numSamples && !bridgeHitsBuilding; sample++) {
+                const t = sample / numSamples;
+                const testPoint = {
+                  x: bridgeStart.x + (bridgeEnd.x - bridgeStart.x) * t,
+                  y: bridgeStart.y + (bridgeEnd.y - bridgeStart.y) * t
+                };
+                
+                for (const patch of this.patches) {
+                  if (!patch.ward || !patch.ward.geometry) continue;
+                  for (const building of patch.ward.geometry) {
+                    if (!building || building.length < 3) continue;
+                    if (pointInPolygon(testPoint, building)) {
+                      bridgeHitsBuilding = true;
+                      break;
+                    }
+                  }
+                  if (bridgeHitsBuilding) break;
+                }
+              }
+            }
+            
+            if (!bridgeHitsBuilding) {
+              // Debug (suppressed): canal street-to-street bridge details
+              
+              this.bridges.push([bridgeStart, bridgeEnd]);
+              totalCrossings++;
+              
+              // Extend streets to bridge endpoints
+              if (ep1.isFirst) {
+                ep1.path.unshift(bridgeStart);
+                ep1.path.unshift(bridgeEnd);
+              } else {
+                ep1.path.push(bridgeStart);
+                ep1.path.push(bridgeEnd);
+              }
+              
+              if (ep2.isFirst) {
+                ep2.path.unshift(bridgeEnd);
+                ep2.path.unshift(bridgeStart);
+              } else {
+                ep2.path.push(bridgeEnd);
+                ep2.path.push(bridgeStart);
+              }
+              
+              // Debug (suppressed): extended canal bridge paths
+            }
+          }
+        }
+      }
+    }
+    
+    // PRIORITY 2: Process paths that already cross water bodies
+    let pathsChecked = 0;
     for (const path of allPaths) {
       if (!path || path.length < 2) continue;
+      pathsChecked++;
       
       for (const waterPoly of this.waterBodies) {
         if (!waterPoly || waterPoly.length < 3) continue;
         
+        const waterType = getWaterType(waterPoly);
         let inWater = false;
         let entryPoint = null;
         let entryDir = null;
+        let segmentsChecked = 0;
+        let hitsFound = 0;
         
         for (let i = 0; i < path.length - 1; i++) {
+          segmentsChecked++;
           const a = path[i];
           const b = path[i + 1];
           if (!a || !b) continue;
           
           const segLen = Math.hypot(b.x - a.x, b.y - a.y) || 1e-6;
           const dir = {x: (b.x - a.x) / segLen, y: (b.y - a.y) / segLen};
-          const hits = segmentCrossesWater(a, b, waterPoly);
+          const hits = findCrossings(a, b, waterPoly);
           const aIn = pointInWater(a, waterPoly);
           const bIn = pointInWater(b, waterPoly);
           
           if (!inWater) {
-            // Not in water yet
             if (hits.length >= 2) {
-              // Enters and exits in same segment
-              hits.sort((x, y) => x.t - y.t);
-              const entry = hits[0];
-              const exit = hits[hits.length - 1];
-              const e0 = new Point(entry.point.x - dir.x * extend, entry.point.y - dir.y * extend);
-              const e1 = new Point(exit.point.x + dir.x * extend, exit.point.y + dir.y * extend);
-              const k = key(e0, e1);
-              if (!seen.has(k)) {
-                this.bridges.push([e0, e1]);
-                seen.add(k);
-                totalCrossings++;
+              // Crosses in single segment - bridge endpoints are EXACTLY where path crosses water edge
+              const entry = hits[0].point;
+              const exit = hits[hits.length - 1].point;
+              
+              let finalEntry = entry;
+              let finalExit = exit;
+              
+              // For CANALS: find perpendicular crossing (shortest straight path across)
+              if (waterType === 'canal') {
+                console.log('CANAL BRIDGE (single-seg): Entry at', entry, 'Exit at', exit);
+                // Find the canal edge closest to the entry point
+                let closestEdgeDist = Infinity;
+                let closestEdgeStart = null;
+                let closestEdgeEnd = null;
+                
+                for (let j = 0; j < waterPoly.length; j++) {
+                  const p1 = waterPoly[j];
+                  const p2 = waterPoly[(j + 1) % waterPoly.length];
+                  
+                  // Distance from entry point to this edge
+                  const edgeDx = p2.x - p1.x;
+                  const edgeDy = p2.y - p1.y;
+                  const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
+                  
+                  // Project entry point onto edge
+                  const t = Math.max(0, Math.min(1, 
+                    ((entry.x - p1.x) * edgeDx + (entry.y - p1.y) * edgeDy) / (edgeLen * edgeLen)
+                  ));
+                  const projX = p1.x + t * edgeDx;
+                  const projY = p1.y + t * edgeDy;
+                  const dist = Math.hypot(projX - entry.x, projY - entry.y);
+                  
+                  if (dist < closestEdgeDist && dist < 2) {
+                    closestEdgeDist = dist;
+                    closestEdgeStart = p1;
+                    closestEdgeEnd = p2;
+                  }
+                }
+                
+                if (closestEdgeStart && closestEdgeEnd) {
+                  // Calculate edge direction
+                  const edgeDx = closestEdgeEnd.x - closestEdgeStart.x;
+                  const edgeDy = closestEdgeEnd.y - closestEdgeStart.y;
+                  const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
+                  const edgeUnitX = edgeDx / edgeLen;
+                  const edgeUnitY = edgeDy / edgeLen;
+                  
+                  // Perpendicular direction (90 degrees)
+                  const perpX = -edgeUnitY;
+                  const perpY = edgeUnitX;
+                  
+                  // Cast ray from entry in perpendicular direction
+                  const rayLen = maxBridgeLength * 2;
+                  const rayEnd1 = new Point(entry.x + perpX * rayLen, entry.y + perpY * rayLen);
+                  const rayEnd2 = new Point(entry.x - perpX * rayLen, entry.y - perpY * rayLen);
+                  
+                  // Find crossings in both perpendicular directions
+                  const crossings1 = findCrossings(entry, rayEnd1, waterPoly);
+                  const crossings2 = findCrossings(entry, rayEnd2, waterPoly);
+                  
+                  // Use the first crossing in either direction (opposite shore)
+                  if (crossings1.length > 0 && crossings1[0].t > 0.01) {
+                    finalExit = crossings1[0].point;
+                    console.log('  Using perpendicular exit (dir1):', finalExit);
+                  } else if (crossings2.length > 0 && crossings2[0].t > 0.01) {
+                    finalExit = crossings2[0].point;
+                    console.log('  Using perpendicular exit (dir2):', finalExit);
+                  } else {
+                    console.log('  No perpendicular crossing found, keeping original');
+                  }
+                }
               }
-            } else if ((hits.length === 1 && !aIn && bIn) || (!aIn && bIn && hits.length === 0)) {
-              // Entering water
-              entryPoint = hits.length > 0 ? hits[0].point : a;
+              
+              const bridgeLen = Math.hypot(finalExit.x - finalEntry.x, finalExit.y - finalEntry.y);
+              
+              // Validate this isn't at a water body overlap (check if endpoints are in OTHER water)
+              const entryInOtherWater = this.waterBodies.some(w => w !== waterPoly && pointInWater(finalEntry, w));
+              const exitInOtherWater = this.waterBodies.some(w => w !== waterPoly && pointInWater(finalExit, w));
+              
+              if (!entryInOtherWater && !exitInOtherWater && bridgeLen <= maxBridgeLength) {
+                if (!tooCloseToOthers(finalEntry, finalExit)) {
+                  this.bridges.push([finalEntry, finalExit]);
+                  totalCrossings++;
+                }
+              }
+            } else if (hits.length === 1 && !aIn && bIn) {
+              entryPoint = hits[0].point;
               entryDir = {x: dir.x, y: dir.y};
               inWater = true;
             }
           } else {
-            // Already in water
-            if ((hits.length > 0 && !bIn) || (!bIn)) {
-              // Exiting water
+            if (hits.length > 0 || !bIn) {
               const exitPoint = hits.length > 0 ? hits[hits.length - 1].point : a;
-              const e0 = new Point(entryPoint.x - entryDir.x * extend, entryPoint.y - entryDir.y * extend);
-              const e1 = new Point(exitPoint.x + dir.x * extend, exitPoint.y + dir.y * extend);
-              const k = key(e0, e1);
-              if (!seen.has(k)) {
-                this.bridges.push([e0, e1]);
-                seen.add(k);
-                totalCrossings++;
+              
+              let finalEntry = entryPoint;
+              let finalExit = exitPoint;
+              
+              // For CANALS: find perpendicular crossing (shortest straight path across)
+              if (waterType === 'canal') {
+                console.log('CANAL BRIDGE: Entry at', entryPoint, 'Exit at', exitPoint);
+                // Find the two closest canal edges to the entry point
+                let closestEdgeDist = Infinity;
+                let closestEdgeStart = null;
+                let closestEdgeEnd = null;
+                
+                for (let j = 0; j < waterPoly.length; j++) {
+                  const p1 = waterPoly[j];
+                  const p2 = waterPoly[(j + 1) % waterPoly.length];
+                  
+                  // Distance from entry point to this edge
+                  const edgeDx = p2.x - p1.x;
+                  const edgeDy = p2.y - p1.y;
+                  const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
+                  
+                  // Project entry point onto edge
+                  const t = Math.max(0, Math.min(1, 
+                    ((entryPoint.x - p1.x) * edgeDx + (entryPoint.y - p1.y) * edgeDy) / (edgeLen * edgeLen)
+                  ));
+                  const projX = p1.x + t * edgeDx;
+                  const projY = p1.y + t * edgeDy;
+                  const dist = Math.hypot(projX - entryPoint.x, projY - entryPoint.y);
+                  
+                  if (dist < closestEdgeDist && dist < 2) { // Only consider very close edges (on the boundary)
+                    closestEdgeDist = dist;
+                    closestEdgeStart = p1;
+                    closestEdgeEnd = p2;
+                  }
+                }
+                
+                if (closestEdgeStart && closestEdgeEnd) {
+                  // Calculate edge direction
+                  const edgeDx = closestEdgeEnd.x - closestEdgeStart.x;
+                  const edgeDy = closestEdgeEnd.y - closestEdgeStart.y;
+                  const edgeLen = Math.hypot(edgeDx, edgeDy) || 1;
+                  const edgeUnitX = edgeDx / edgeLen;
+                  const edgeUnitY = edgeDy / edgeLen;
+                  
+                  // Perpendicular direction (90 degrees)
+                  const perpX = -edgeUnitY;
+                  const perpY = edgeUnitX;
+                  
+                  // Cast ray from entry in perpendicular direction
+                  const rayLen = maxBridgeLength * 2;
+                  const rayEnd1 = new Point(entryPoint.x + perpX * rayLen, entryPoint.y + perpY * rayLen);
+                  const rayEnd2 = new Point(entryPoint.x - perpX * rayLen, entryPoint.y - perpY * rayLen);
+                  
+                  // Find crossings in both perpendicular directions
+                  const crossings1 = findCrossings(entryPoint, rayEnd1, waterPoly);
+                  const crossings2 = findCrossings(entryPoint, rayEnd2, waterPoly);
+                  
+                  // Use the first crossing in either direction (opposite shore)
+                  if (crossings1.length > 0 && crossings1[0].t > 0.01) {
+                    finalExit = crossings1[0].point;
+                    console.log('  Using perpendicular exit (dir1):', finalExit);
+                  } else if (crossings2.length > 0 && crossings2[0].t > 0.01) {
+                    finalExit = crossings2[0].point;
+                    console.log('  Using perpendicular exit (dir2):', finalExit);
+                  } else {
+                    console.log('  No perpendicular crossing found, keeping original');
+                  }
+                }
               }
+              
+              const bridgeLen = Math.hypot(finalExit.x - finalEntry.x, finalExit.y - finalEntry.y);
+              
+              // Validate not at water overlap and not too long
+              const entryInOtherWater = this.waterBodies.some(w => w !== waterPoly && pointInWater(finalEntry, w));
+              const exitInOtherWater = this.waterBodies.some(w => w !== waterPoly && pointInWater(finalExit, w));
+              
+              if (!entryInOtherWater && !exitInOtherWater && bridgeLen <= maxBridgeLength) {
+                if (!tooCloseToOthers(finalEntry, finalExit)) {
+                  this.bridges.push([finalEntry, finalExit]);
+                  totalCrossings++;
+                }
+              }
+              
               inWater = false;
               entryPoint = null;
               entryDir = null;
             }
           }
         }
+      }
+    }
+    
+    // ADDITIONAL: Find opportunities to connect streets across water where no path currently crosses
+    // Look for street endpoints near water on one side, and other street endpoints near water on opposite side
+    const connectionSearchDist = streetW * 3; // How far from water to look for street endpoints
+    const maxConnectionDist = maxBridgeLength * 0.8; // Max distance to connect streets
+    
+    // Debug (suppressed): start street-to-street bridge search
+    
+    for (const waterPoly of this.waterBodies) {
+      if (!waterPoly || waterPoly.length < 3) continue;
+      
+      // Find all street endpoints near this water body
+      const nearbyEndpoints = [];
+      // Debug (suppressed): checking water body path counts
+      for (const path of allPaths) {
+        if (!path || path.length < 2) continue;
         
-        // If path ends while still in water
-        if (inWater && entryPoint) {
-          const lastPt = path[path.length - 1];
-          const e0 = new Point(entryPoint.x - entryDir.x * extend, entryPoint.y - entryDir.y * extend);
-          const e1 = new Point(lastPt.x + entryDir.x * extend, lastPt.y + entryDir.y * extend);
-          const k = key(e0, e1);
-          if (!seen.has(k)) {
-            this.bridges.push([e0, e1]);
-            seen.add(k);
-            totalCrossings++;
+        // Check first endpoint
+        const first = path[0];
+        if (!pointInAnyWater(first)) {
+          // Distance to water edge
+          let minDist = Infinity;
+          for (let j = 0; j < waterPoly.length; j++) {
+            const p1 = waterPoly[j];
+            const p2 = waterPoly[(j + 1) % waterPoly.length];
+            const dx = p2.x - p1.x, dy = p2.y - p1.y;
+            const len2 = dx * dx + dy * dy || 1;
+            const t = Math.max(0, Math.min(1, ((first.x - p1.x) * dx + (first.y - p1.y) * dy) / len2));
+            const projX = p1.x + t * dx, projY = p1.y + t * dy;
+            const dist = Math.hypot(projX - first.x, projY - first.y);
+            minDist = Math.min(minDist, dist);
+          }
+          if (minDist < connectionSearchDist) {
+            nearbyEndpoints.push({point: first, path: path, isFirst: true});
+          }
+        }
+        
+        // Check last endpoint
+        const last = path[path.length - 1];
+        if (!pointInAnyWater(last)) {
+          let minDist = Infinity;
+          for (let j = 0; j < waterPoly.length; j++) {
+            const p1 = waterPoly[j];
+            const p2 = waterPoly[(j + 1) % waterPoly.length];
+            const dx = p2.x - p1.x, dy = p2.y - p1.y;
+            const len2 = dx * dx + dy * dy || 1;
+            const t = Math.max(0, Math.min(1, ((last.x - p1.x) * dx + (last.y - p1.y) * dy) / len2));
+            const projX = p1.x + t * dx, projY = p1.y + t * dy;
+            const dist = Math.hypot(projX - last.x, projY - last.y);
+            minDist = Math.min(minDist, dist);
+          }
+          if (minDist < connectionSearchDist) {
+            nearbyEndpoints.push({point: last, path: path, isFirst: false});
+          }
+        }
+      }
+      
+      // Debug (suppressed): nearby endpoints count
+      
+      // Try to connect pairs of endpoints across water
+      for (let i = 0; i < nearbyEndpoints.length; i++) {
+        for (let j = i + 1; j < nearbyEndpoints.length; j++) {
+          const ep1 = nearbyEndpoints[i];
+          const ep2 = nearbyEndpoints[j];
+          
+          // Skip if same path
+          if (ep1.path === ep2.path) continue;
+          
+          const dist = Math.hypot(ep2.point.x - ep1.point.x, ep2.point.y - ep1.point.y);
+          if (dist > maxConnectionDist) continue;
+          
+          // Check if a straight line between them crosses this water body
+          const crossings = findCrossings(ep1.point, ep2.point, waterPoly);
+          // Debug (suppressed): testing endpoint pair for bridge
+          
+          // If no crossings, endpoints might BE at water edge already - check if line passes through water
+          if (crossings.length === 0) {
+            // Sample midpoint to see if bridge would cross water
+            const mid = {x: (ep1.point.x + ep2.point.x) / 2, y: (ep1.point.y + ep2.point.y) / 2};
+            if (pointInWater(mid, waterPoly)) {
+              // Bridge would cross water - manually create bridge at street endpoints
+              const bridgeStart = ep1.point;
+              const bridgeEnd = ep2.point;
+              const bridgeLen = dist;
+              
+              if (bridgeLen <= maxConnectionDist && !tooCloseToOthers(bridgeStart, bridgeEnd)) {
+                // Helper to check if point is inside a polygon (ray casting)
+                const pointInPolygon = (pt, poly) => {
+                  let inside = false;
+                  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const xi = poly[i].x, yi = poly[i].y;
+                    const xj = poly[j].x, yj = poly[j].y;
+                    const intersect = ((yi > pt.y) !== (yj > pt.y)) && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+                    if (intersect) inside = !inside;
+                  }
+                  return inside;
+                };
+                
+                // Check if bridge would hit any buildings
+                let bridgeHitsBuilding = false;
+                if (this.patches) {
+                  const numSamples = 20;
+                  for (let sample = 0; sample <= numSamples && !bridgeHitsBuilding; sample++) {
+                    const t = sample / numSamples;
+                    const testPoint = {
+                      x: bridgeStart.x + (bridgeEnd.x - bridgeStart.x) * t,
+                      y: bridgeStart.y + (bridgeEnd.y - bridgeStart.y) * t
+                    };
+                    
+                    for (const patch of this.patches) {
+                      if (!patch.ward || !patch.ward.geometry) continue;
+                      for (const building of patch.ward.geometry) {
+                        if (!building || building.length < 3) continue;
+                        if (pointInPolygon(testPoint, building)) {
+                          bridgeHitsBuilding = true;
+                          break;
+                        }
+                      }
+                      if (bridgeHitsBuilding) break;
+                    }
+                  }
+                }
+                
+                if (!bridgeHitsBuilding) {
+                  // Debug (suppressed): creating bridge with midpoint in water
+                  this.bridges.push([bridgeStart, bridgeEnd]);
+                  totalCrossings++;
+                  
+                  // Extend streets to bridge endpoints
+                  if (ep1.isFirst) {
+                    ep1.path.unshift(bridgeStart);
+                    ep1.path.unshift(bridgeEnd);
+                  } else {
+                    ep1.path.push(bridgeStart);
+                    ep1.path.push(bridgeEnd);
+                  }
+                  
+                  if (ep2.isFirst) {
+                    ep2.path.unshift(bridgeEnd);
+                    ep2.path.unshift(bridgeStart);
+                  } else {
+                    ep2.path.push(bridgeEnd);
+                    ep2.path.push(bridgeStart);
+                  }
+                  
+                  // Debug (suppressed): extended paths for no-crossings case
+                }
+              }
+            }
+            continue;
+          }
+          
+          if (crossings.length >= 2) {
+            // Use the water crossing points as bridge ends (where streets meet water)
+            // crossings[0] is entry point (closest to ep1), crossings[1] is exit point (closest to ep2)
+            const bridgeStart = crossings[0];
+            const bridgeEnd = crossings[1];
+            const bridgeLen = Math.hypot(bridgeEnd.x - bridgeStart.x, bridgeEnd.y - bridgeStart.y);
+            
+            if (bridgeLen <= maxConnectionDist && !tooCloseToOthers(bridgeStart, bridgeEnd)) {
+              // Verify endpoints aren't in other water bodies
+              const ep1InOther = this.waterBodies.some(w => w !== waterPoly && pointInWater(ep1.point, w));
+              const ep2InOther = this.waterBodies.some(w => w !== waterPoly && pointInWater(ep2.point, w));
+              
+              if (!ep1InOther && !ep2InOther) {
+                // Helper to check if point is inside a polygon (ray casting)
+                const pointInPolygon = (pt, poly) => {
+                  let inside = false;
+                  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const xi = poly[i].x, yi = poly[i].y;
+                    const xj = poly[j].x, yj = poly[j].y;
+                    const intersect = ((yi > pt.y) !== (yj > pt.y)) && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+                    if (intersect) inside = !inside;
+                  }
+                  return inside;
+                };
+                
+                // Check if bridge would hit any buildings by sampling many points along the bridge
+                let bridgeHitsBuilding = false;
+                if (this.patches) {
+                  // Sample 20 points along the bridge line to catch any building intersections
+                  const numSamples = 20;
+                  for (let sample = 0; sample <= numSamples && !bridgeHitsBuilding; sample++) {
+                    const t = sample / numSamples;
+                    const testPoint = {
+                      x: bridgeStart.x + (bridgeEnd.x - bridgeStart.x) * t,
+                      y: bridgeStart.y + (bridgeEnd.y - bridgeStart.y) * t
+                    };
+                    
+                    // Check if this point is inside any building
+                    for (const patch of this.patches) {
+                      if (!patch.ward || !patch.ward.geometry) continue;
+                      for (const building of patch.ward.geometry) {
+                        if (!building || building.length < 3) continue;
+                        if (pointInPolygon(testPoint, building)) {
+                          bridgeHitsBuilding = true;
+                          break;
+                        }
+                      }
+                      if (bridgeHitsBuilding) break;
+                    }
+                  }
+                }
+                
+                if (!bridgeHitsBuilding) {
+                  // Add the bridge
+                  this.bridges.push([bridgeStart, bridgeEnd]);
+                  totalCrossings++;
+                  
+                  // Extend streets to water edge and through bridge
+                  // Add bridgeStart to ep1's path
+                  if (ep1.isFirst) {
+                    ep1.path.unshift(bridgeStart);
+                    ep1.path.unshift(bridgeEnd);
+                  } else {
+                    ep1.path.push(bridgeStart);
+                    ep1.path.push(bridgeEnd);
+                  }
+                  
+                  // Add bridgeEnd to ep2's path  
+                  if (ep2.isFirst) {
+                    ep2.path.unshift(bridgeEnd);
+                    ep2.path.unshift(bridgeStart);
+                  } else {
+                    ep2.path.push(bridgeEnd);
+                    ep2.path.push(bridgeStart);
+                  }
+                  
+                  // Debug (suppressed): extended paths lengths
+                }
+              }
+            }
           }
         }
       }
     }
-    
-    console.log('Bridge computation:', totalCrossings, 'crossings detected,', this.bridges.length, 'unique bridges created from', allPaths.length, 'paths and', this.waterBodies.length, 'water bodies');
+    // Summary: number of bridges created
+    console.log('Bridges built:', totalCrossings);
   }
   
   // Ensure at least one bridge crosses major rivers that split the city
@@ -2967,9 +3886,11 @@ class CityModel {
     };
     
     // Find rivers (not coasts) that are wide enough to matter
+    let forced = 0;
     for (let wi = 0; wi < this.waterBodies.length; wi++) {
       const water = this.waterBodies[wi];
       const type = this.waterBodyTypes[wi];
+      // Debug (suppressed): water body inspection
       if (type !== 'river' && type !== 'canal') continue;
       if (!water || water.length < 4) continue;
       
@@ -2998,72 +3919,198 @@ class CityModel {
       }
       
       if (!hasBridge) {
-        // Create 1-2 bridges at narrowest points INSIDE the city
-        const cityCenter = {x: 0, y: 0};
-        for (const p of this.borderShape) { cityCenter.x += p.x; cityCenter.y += p.y; }
-        cityCenter.x /= this.borderShape.length;
-        cityCenter.y /= this.borderShape.length;
+        // No bridge present: generate a forced crossing
         
-        // Find narrow crossing points that are inside the city
-        const candidates = [];
-        
-        for (let i = 0; i < water.length; i++) {
-          const p1 = water[i];
+        if (type === 'canal') {
+          // For CANAL: just place a perpendicular bridge through the city center
+          // Debug (suppressed): generating perpendicular canal bridge
           
-          // Find opposite side points
-          for (let j = Math.floor(water.length / 3); j < water.length - Math.floor(water.length / 3); j++) {
-            const idx = (i + j) % water.length;
-            const p2 = water[idx];
-            const midpoint = new Point((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
-            
-            // Only consider crossings where midpoint is inside city
-            if (!isInsideCity(midpoint)) continue;
-            
-            const spanDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-            const distToCenter = Math.hypot(midpoint.x - cityCenter.x, midpoint.y - cityCenter.y);
-            
-            // Score favors narrow spans near city center
-            const score = spanDist + distToCenter * 0.3;
-            
-            candidates.push({
-              pair: [p1, p2],
-              score: score,
-              span: spanDist
-            });
-          }
-        }
-        
-        if (candidates.length > 0) {
-          // Sort by score (lower is better)
-          candidates.sort((a, b) => a.score - b.score);
+          // Find canal segments that pass through city bounds
+          const cityMinY = Math.min(...this.borderShape.map(p => p.y));
+          const cityMaxY = Math.max(...this.borderShape.map(p => p.y));
+          const cityMinX = Math.min(...this.borderShape.map(p => p.x));
+          const cityMaxX = Math.max(...this.borderShape.map(p => p.x));
+          const cityCenterX = (cityMinX + cityMaxX) / 2;
+          const cityCenterY = (cityMinY + cityMaxY) / 2;
           
-          // Add 1-2 bridges (best crossing, and maybe a second one if it's different enough)
-          this.bridges.push(candidates[0].pair);
-          console.log('Added forced river crossing bridge inside city (span:', candidates[0].span.toFixed(1), ')');
+          console.log('  City bounds: X', cityMinX.toFixed(1), 'to', cityMaxX.toFixed(1), 'Y', cityMinY.toFixed(1), 'to', cityMaxY.toFixed(1));
+          console.log('  Canal polygon points:', water.map(p => '(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ')').join(', '));
           
-          // Maybe add a second crossing if it's far enough from the first
-          if (candidates.length > 1 && Random.chance(0.6)) {
-            const first = candidates[0].pair;
-            const firstMid = new Point((first[0].x + first[1].x) / 2, (first[0].y + first[1].y) / 2);
-            
-            for (let i = 1; i < Math.min(5, candidates.length); i++) {
-              const candidate = candidates[i];
-              const candMid = new Point(
-                (candidate.pair[0].x + candidate.pair[1].x) / 2,
-                (candidate.pair[0].y + candidate.pair[1].y) / 2
-              );
-              const separation = Math.hypot(candMid.x - firstMid.x, candMid.y - firstMid.y);
-              
-              // Add second bridge if it's well separated from first
-              if (separation > this.cityRadius * 0.4) {
-                this.bridges.push(candidate.pair);
-                console.log('Added second river crossing bridge (span:', candidate.span.toFixed(1), ')');
-                break;
+          // Robust orientation-based scan across canal within city
+          const waterMinX = Math.min(...water.map(p => p.x));
+          const waterMaxX = Math.max(...water.map(p => p.x));
+          const waterMinY = Math.min(...water.map(p => p.y));
+          const waterMaxY = Math.max(...water.map(p => p.y));
+          const waterW = waterMaxX - waterMinX;
+          const waterH = waterMaxY - waterMinY;
+          const isVerticalCanal = waterH >= waterW;
+
+          let crossings = [];
+          let placed = false;
+          const cityH = cityMaxY - cityMinY;
+          const cityW = cityMaxX - cityMinX;
+          const yCandidates = [0, 0.15, -0.15, 0.3, -0.3, 0.45, -0.45].map(f => cityCenterY + f * cityH);
+          const xCandidates = [0, 0.15, -0.15, 0.3, -0.3, 0.45, -0.45].map(f => cityCenterX + f * cityW);
+
+          if (isVerticalCanal) {
+            for (const y of yCandidates) {
+              if (y <= cityMinY || y >= cityMaxY) continue;
+              if (y <= waterMinY || y >= waterMaxY) continue;
+              crossings = [];
+              const a = new Point(cityMinX - 500, y);
+              const b = new Point(cityMaxX + 500, y);
+              for (let j = 0; j < water.length; j++) {
+                const c = water[j], d = water[(j + 1) % water.length];
+                const r = {x: b.x - a.x, y: b.y - a.y};
+                const s = {x: d.x - c.x, y: d.y - c.y};
+                const denom = r.x * s.y - r.y * s.x;
+                if (Math.abs(denom) < 1e-8) continue;
+                const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+                const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+                if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+                  crossings.push(new Point(a.x + r.x * t, a.y + r.y * t));
+                }
               }
+              if (crossings.length >= 2) {
+                crossings.sort((p, q) => p.x - q.x);
+                let bestPair = null; let bestSpan = Infinity;
+                for (let k = 0; k + 1 < crossings.length; k++) {
+                  const span = Math.abs(crossings[k + 1].x - crossings[k].x);
+                  if (span < bestSpan) { bestSpan = span; bestPair = [crossings[k], crossings[k + 1]]; }
+                }
+                if (bestPair) {
+                  const [bridgeStart, bridgeEnd] = bestPair;
+                  let hitsBuilding = false;
+                  for (const patch of this.patches) {
+                    if (!patch.ward || !patch.ward.buildings) continue;
+                    for (const building of patch.ward.buildings) {
+                      if (!building.shape || building.shape.length < 3) continue;
+                      for (let kk = 0; kk < building.shape.length; kk++) {
+                        const b1 = building.shape[kk];
+                        const b2 = building.shape[(kk + 1) % building.shape.length];
+                        const r2 = {x: bridgeEnd.x - bridgeStart.x, y: bridgeEnd.y - bridgeStart.y};
+                        const s2 = {x: b2.x - b1.x, y: b2.y - b1.y};
+                        const denom2 = r2.x * s2.y - r2.y * s2.x;
+                        if (Math.abs(denom2) < 1e-8) continue;
+                        const t2 = ((b1.x - bridgeStart.x) * s2.y - (b1.y - bridgeStart.y) * s2.x) / denom2;
+                        const u2 = ((b1.x - bridgeStart.x) * r2.y - (b1.y - bridgeStart.y) * r2.x) / denom2;
+                        if (t2 >= 0 && t2 <= 1 && u2 >= 0 && u2 <= 1) { hitsBuilding = true; break; }
+                      }
+                      if (hitsBuilding) break;
+                    }
+                    if (hitsBuilding) break;
+                  }
+                  if (!hitsBuilding) {
+                    this.bridges.push([bridgeStart, bridgeEnd]);
+                    forced++;
+                    placed = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } else {
+            for (const x of xCandidates) {
+              if (x <= cityMinX || x >= cityMaxX) continue;
+              if (x <= waterMinX || x >= waterMaxX) continue;
+              crossings = [];
+              const a = new Point(x, cityMinY - 500);
+              const b = new Point(x, cityMaxY + 500);
+              for (let j = 0; j < water.length; j++) {
+                const c = water[j], d = water[(j + 1) % water.length];
+                const r = {x: b.x - a.x, y: b.y - a.y};
+                const s = {x: d.x - c.x, y: d.y - c.y};
+                const denom = r.x * s.y - r.y * s.x;
+                if (Math.abs(denom) < 1e-8) continue;
+                const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
+                const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
+                if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+                  crossings.push(new Point(a.x + r.x * t, a.y + r.y * t));
+                }
+              }
+              if (crossings.length >= 2) {
+                crossings.sort((p, q) => p.y - q.y);
+                let bestPair = null; let bestSpan = Infinity;
+                for (let k = 0; k + 1 < crossings.length; k++) {
+                  const span = Math.abs(crossings[k + 1].y - crossings[k].y);
+                  if (span < bestSpan) { bestSpan = span; bestPair = [crossings[k], crossings[k + 1]]; }
+                }
+                if (bestPair) {
+                  const [bridgeStart, bridgeEnd] = bestPair;
+                  let hitsBuilding = false;
+                  for (const patch of this.patches) {
+                    if (!patch.ward || !patch.ward.buildings) continue;
+                    for (const building of patch.ward.buildings) {
+                      if (!building.shape || building.shape.length < 3) continue;
+                      for (let kk = 0; kk < building.shape.length; kk++) {
+                        const b1 = building.shape[kk];
+                        const b2 = building.shape[(kk + 1) % building.shape.length];
+                        const r2 = {x: bridgeEnd.x - bridgeStart.x, y: bridgeEnd.y - bridgeStart.y};
+                        const s2 = {x: b2.x - b1.x, y: b2.y - b1.y};
+                        const denom2 = r2.x * s2.y - r2.y * s2.x;
+                        if (Math.abs(denom2) < 1e-8) continue;
+                        const t2 = ((b1.x - bridgeStart.x) * s2.y - (b1.y - bridgeStart.y) * s2.x) / denom2;
+                        const u2 = ((b1.x - bridgeStart.x) * r2.y - (b1.y - bridgeStart.y) * r2.x) / denom2;
+                        if (t2 >= 0 && t2 <= 1 && u2 >= 0 && u2 <= 1) { hitsBuilding = true; break; }
+                      }
+                      if (hitsBuilding) break;
+                    }
+                    if (hitsBuilding) break;
+                  }
+                  if (!hitsBuilding) {
+                    this.bridges.push([bridgeStart, bridgeEnd]);
+                    forced++;
+                    placed = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          // Debug (suppressed): failed to place canal bridge after scanning slices
+          
+          if (crossings.length >= 2) {
+            // Check if bridge line hits any buildings
+            const bridgeStart = crossings[0];
+            const bridgeEnd = crossings[crossings.length - 1];
+            let hitsBuilding = false;
+            
+            for (const patch of this.patches) {
+              if (!patch.ward || !patch.ward.buildings) continue;
+              for (const building of patch.ward.buildings) {
+                if (!building.shape || building.shape.length < 3) continue;
+                // Check if bridge line intersects building polygon
+                for (let k = 0; k < building.shape.length; k++) {
+                  const b1 = building.shape[k];
+                  const b2 = building.shape[(k + 1) % building.shape.length];
+                  const r = {x: bridgeEnd.x - bridgeStart.x, y: bridgeEnd.y - bridgeStart.y};
+                  const s = {x: b2.x - b1.x, y: b2.y - b1.y};
+                  const denom = r.x * s.y - r.y * s.x;
+                  if (Math.abs(denom) < 1e-8) continue;
+                  const t = ((b1.x - bridgeStart.x) * s.y - (b1.y - bridgeStart.y) * s.x) / denom;
+                  const u = ((b1.x - bridgeStart.x) * r.y - (b1.y - bridgeStart.y) * r.x) / denom;
+                  if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+                    hitsBuilding = true;
+                    break;
+                  }
+                }
+                if (hitsBuilding) break;
+              }
+              if (hitsBuilding) break;
+            }
+            
+            if (!hitsBuilding) {
+              this.bridges.push([bridgeStart, bridgeEnd]);
+              forced++;
+            } else {
+              // Debug (suppressed): bridge skipped due to building hit
             }
           }
         }
       }
+    }
+    if (forced > 0) {
+      console.log('Forced bridges:', forced);
     }
   }
   
@@ -3158,7 +4205,7 @@ class CityModel {
       }
     }
     
-    console.log('Generated', this.piers.length, 'random piers along water edges (overlap-filtered)');
+    console.log('Piers built:', this.piers.length);
   }
   
   // Tag DCEL edges that run along streets/exterior roads
@@ -3258,7 +4305,7 @@ class CityModel {
       }
     }
     
-    console.log('Topology graph size:', graph.size, 'from', this.patches.length, 'patches');
+    console.log('Topology nodes:', graph.size);
     return graph;
   }
   
@@ -3422,6 +4469,9 @@ class CityModel {
     }
     
     for (const patch of innerPatches) {
+      // Skip patches that already have a ward assigned (plaza, urban castle, etc.)
+      if (patch.ward) continue;
+      
       const wardType = wardTypes[typeIndex % wardTypes.length];
       typeIndex++;
       
@@ -3642,7 +4692,24 @@ class CityModel {
           }
         }
       }
-      ward.geometry = buildings;
+      
+      // Filter out buildings that intersect water bodies
+      if (buildings.length > 0 && Array.isArray(this.waterBodies) && this.waterBodies.length > 0) {
+        ward.geometry = buildings.filter(building => {
+          if (!building || building.length < 3) return false;
+          const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+          center.x /= building.length;
+          center.y /= building.length;
+          
+          for (const water of this.waterBodies) {
+            if (!water || water.length < 3) continue;
+            if (pointInPoly(center, water)) return false;
+          }
+          return true;
+        });
+      } else {
+        ward.geometry = buildings;
+      }
     }
   }
 }
@@ -3655,7 +4722,7 @@ class Palette {
   static paper = '#F3EDE2';
   static light = '#4A3D2C';
   static dark = '#2B2416';
-  static roof = '#8B7355'; // Brown roof color
+  static roof = '#8B7355'; // Brown roof colour
 }
 
 class CityRenderer {
@@ -3694,7 +4761,8 @@ class CityRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     
-    ctx.fillStyle = Palette.paper;
+    // Use light brown terrain colour for background instead of white
+    ctx.fillStyle = 'hsl(85, 30%, 80%)';
     ctx.fillRect(0, 0, width, height);
     
     const margin = 40;
@@ -3709,13 +4777,19 @@ class CityRenderer {
     ctx.save();
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
     ctx.scale(scale, scale);
+
+    // Terrain + city floor base layers (behind wards/buildings)
+    this.drawOutsideTerrain(ctx);
+    this.drawCityFloor(ctx);
     
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
     
     // Create or update FormalMap (recreate if settings changed)
     if (!this.formalMap || this.settingsChanged()) {
+      // Pass border shape to enable inside/outside clipping in PatchView
       this.formalMap = new FormalMap(cityData, Palette);
+      this.formalMap.settings.interiorClip = this.model.borderShape;
       this.lastSettings = {
         streetWidth: StateManager.streetWidth,
         buildingGap: StateManager.buildingGap,
@@ -3773,6 +4847,94 @@ class CityRenderer {
     
     ctx.restore();
   }
+
+  // Draw light beige floor inside the city walls ONLY
+  drawCityFloor(ctx) {
+    if (!this.model.borderShape || this.model.borderShape.length < 3) return;
+    
+    // Clip to interior of wall AND outside of castle areas
+    ctx.save();
+    
+    // Create compound clip path: inside city walls but outside castles
+    const castles = this.model.patches.filter(p => p.ward instanceof Castle && p.ward.citadelWall && p.ward.citadelWall.length > 0);
+    
+    if (castles.length > 0) {
+      // Use evenodd: city wall interior minus castle areas
+      ctx.beginPath();
+      ctx.moveTo(this.model.borderShape[0].x, this.model.borderShape[0].y);
+      for (let i = 1; i < this.model.borderShape.length; i++) {
+        ctx.lineTo(this.model.borderShape[i].x, this.model.borderShape[i].y);
+      }
+      ctx.closePath();
+      // Subtract each castle area
+      for (const patch of castles) {
+        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        }
+        ctx.closePath();
+      }
+      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+    } else {
+      // No castles, just clip to city wall interior
+      ctx.beginPath();
+      ctx.moveTo(this.model.borderShape[0].x, this.model.borderShape[0].y);
+      for (let i = 1; i < this.model.borderShape.length; i++) {
+        ctx.lineTo(this.model.borderShape[i].x, this.model.borderShape[i].y);
+      }
+      ctx.closePath();
+      ctx.clip();
+    }
+    
+    // Only draw for INSIDE patches - iterate through and fill each one
+    for (const patch of this.model.patches) {
+      if (!patch.withinCity) continue; // Skip outside patches
+      if (patch.ward instanceof Castle) continue; // Skip castle patches
+      if (!patch.shape || patch.shape.length < 3) continue;
+      
+      ctx.beginPath();
+      ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
+      for (let i = 1; i < patch.shape.length; i++) {
+        ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#F7F1E3'; // very light beige base for all inside cells
+      ctx.fill();
+    }
+    
+    ctx.restore();
+  }
+
+  // Shade ALL outside patches (cells) with green/brown natural variation, plus castle grounds
+  drawOutsideTerrain(ctx) {
+    if (!this.model || !this.model.patches) return;
+    const noiseScale = 0.05;
+    for (const patch of this.model.patches) {
+      // Draw terrain for outside cells AND castle patches
+      if (patch.withinCity && !(patch.ward instanceof Castle)) continue;
+      if (!patch.shape || patch.shape.length < 3) continue;
+
+      // Compute a representative noise/sample point (centroid)
+      let cx = 0, cy = 0; for (const p of patch.shape) { cx += p.x; cy += p.y; } cx /= patch.shape.length; cy /= patch.shape.length;
+      const n = (PerlinNoise.noise(cx * noiseScale, cy * noiseScale) + 1) * 0.5; // 0..1
+
+      // Blend between muted grass and dry earth
+      // Grass base: hsl(85,30%,80%)  Earth base: hsl(35,35%,82%) (soft tones)
+      const h = 85 * (1 - n) + 35 * n;
+      const s = 30 * (1 - n) + 35 * n;
+      const l = 80 * (1 - n) + 82 * n + (Random.float() - 0.5) * 2; // tiny jitter
+      const fill = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
+      for (let i = 1; i < patch.shape.length; i++) ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
   
   /**
    * Prepare city data structure for view architecture
@@ -3786,11 +4948,14 @@ class CityRenderer {
       const wardData = {
         shape: patch.shape,
         availableShape: patch.ward ? patch.ward.availableShape : null,
-        color: this.getPatchColor(patch),
+        colour: this.getPatchColour(patch),
         type: this.getPatchType(patch),
         buildings: [],
         furrows: null,
-        inside: isInside
+        inside: isInside,
+        withinCity: isInside,
+        ward: patch.ward,
+        wardColourTint: this.getWardColourTint(patch.ward)
       };
       
       // Add buildings if ward has geometry
@@ -3847,11 +5012,22 @@ class CityRenderer {
     
     // Add citadel walls
     for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle && patch.ward.wall) {
+      if (patch.ward instanceof Castle && patch.ward.citadelWall) {
+        const castleGates = [];
+        if (patch.ward.citadelGate) {
+          castleGates.push({
+            x: patch.ward.citadelGate.x,
+            y: patch.ward.citadelGate.y,
+            width: 8,
+            height: 12,
+            angle: 0
+          });
+        }
         walls.push({
-          path: patch.ward.wall,
-          towers: this.generateWallTowers(patch.ward.wall),
-          gates: []
+          path: patch.ward.citadelWall,
+          towers: this.generateWallTowers(patch.ward.citadelWall),
+          gates: castleGates,
+          isCitadel: true
         });
       }
     }
@@ -3918,16 +5094,20 @@ class CityRenderer {
     return towers;
   }
   
-  getPatchColor(patch) {
+  getPatchColour(patch) {
     if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
       return '#D4C5A0';
     } else if (patch === this.model.citadel) {
       return '#D5C8B8';
     } else if (patch.ward instanceof Farm) {
-      const hue = 45 + Random.int(-10, 10);
-      const sat = 25 + Random.int(-5, 5);
-      const light = 85 + Random.int(-5, 5);
-      return `hsl(${hue}, ${sat}%, ${light}%)`;
+      // Use stored farm colour (same as classic renderer)
+      if (!patch.ward.farmColor) {
+        const hue = 50 + Random.float() * 40; // Yellow-green to olive range
+        const sat = 20 + Random.float() * 15; // Low saturation
+        const light = 75 + Random.float() * 10; // Pale
+        patch.ward.farmColor = `hsl(${hue}, ${sat}%, ${light}%)`;
+      }
+      return patch.ward.farmColor;
     } else if (patch.ward instanceof Park) {
       return '#C8D4A8';
     } else if (patch.ward instanceof Slum) {
@@ -3955,7 +5135,8 @@ class CityRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     
-    ctx.fillStyle = Palette.paper;
+    // Use light brown terrain colour for background instead of white
+    ctx.fillStyle = 'hsl(85, 30%, 80%)';
     ctx.fillRect(0, 0, width, height);
     
     const margin = 40;
@@ -3970,9 +5151,13 @@ class CityRenderer {
     ctx.save();
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
     ctx.scale(scale, scale);
-    // City is centered at origin (0,0), no additional translation needed
+    // City is centred at origin (0,0), no additional translation needed
     
     this.scale = scale;
+    
+    // Terrain + city floor base layers (behind patches/buildings)
+    this.drawOutsideTerrain(ctx);
+    this.drawCityFloor(ctx);
     
     // Remove view mode filters - simplified
     for (const patch of this.model.patches) {
@@ -3995,14 +5180,34 @@ class CityRenderer {
     }
     
     for (const patch of this.model.patches) {
-      // Draw citadel walls for Castle wards
+      // Draw ward geometry (buildings), clipping inside/outside depending on patch.withinCity
+      // Skip castle buildings here, draw them later
+      if (patch.ward && patch.ward.geometry && !(patch.ward instanceof Castle)) {
+        const wardColourTint = this.getWardColourTint(patch.ward);
+        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity, wardColourTint);
+      }
+    }
+    
+    // Draw castle floors
+    for (const patch of this.model.patches) {
+      if (patch.ward instanceof Castle && patch.ward.citadelWall && patch.ward.citadelWall.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = '#9a9a9a';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    
+    // Draw citadel walls AFTER castle floor
+    for (const patch of this.model.patches) {
       if (patch.ward instanceof Castle) {
         this.drawCitadelWall(ctx, patch.ward);
-      }
-      
-      // Draw ward geometry (buildings), clipping inside/outside depending on patch.withinCity
-      if (patch.ward && patch.ward.geometry) {
-        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity);
       }
     }
     
@@ -4025,6 +5230,19 @@ class CityRenderer {
       this.drawBridges(ctx, this.model.bridges);
     }
     
+    // Draw waterfront features
+    if (this.model.waterfrontBuildings && this.model.waterfrontBuildings.length > 0) {
+      this.drawWaterfrontFeatures(ctx, this.model.waterfrontBuildings);
+    }
+    
+    // Draw castle buildings AFTER floor, gates, water, and bridges
+    for (const patch of this.model.patches) {
+      if (patch.ward instanceof Castle && patch.ward.geometry) {
+        const wardColourTint = this.getWardColourTint(patch.ward);
+        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity, wardColourTint);
+      }
+    }
+    
     // Draw trees if enabled (before labels so labels appear on top)
     if (StateManager.showTrees) {
       // Global tree spawning across all patches
@@ -4033,6 +5251,17 @@ class CityRenderer {
       }
       if (this.globalTrees && this.globalTrees.length > 0) {
         this.drawTrees(ctx, this.globalTrees);
+      }
+    }
+    
+    // Draw castle towers (gatehouses) AFTER EVERYTHING - on top with NO clipping
+    for (const patch of this.model.patches) {
+      if (patch.ward instanceof Castle && patch.ward.towers) {
+        const wardColourTint = this.getWardColourTint(patch.ward);
+        // Direct draw without any clipping
+        ctx.save();
+        BuildingPainter.paint(ctx, patch.ward.towers, Palette.roof, Palette.dark, 0.5, this.scale, wardColourTint);
+        ctx.restore();
       }
     }
     
@@ -4046,6 +5275,52 @@ class CityRenderer {
         } else if (patch === this.model.citadel && !patch.ward) {
           this.drawLabel(ctx, patch, 'Citadel');
         }
+      }
+    }
+    
+    ctx.restore();
+  }
+  
+  drawWaterfrontFeatures(ctx, features) {
+    const safeScale = Math.max(1e-3, this.scale || 1);
+    ctx.save();
+    
+    for (const {feature, geometry} of features) {
+      if (feature === 'dock' && Array.isArray(geometry)) {
+        // Draw dock as a wooden platform
+        ctx.fillStyle = '#8B7355';
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(geometry[0].x, geometry[0].y);
+        for (let i = 1; i < geometry.length; i++) {
+          ctx.lineTo(geometry[i].x, geometry[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (feature === 'post' && geometry.x !== undefined) {
+        // Draw mooring post
+        ctx.fillStyle = '#5C4033';
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.2 / safeScale, 0.3);
+        ctx.beginPath();
+        ctx.arc(geometry.x, geometry.y, Math.max(0.4 / safeScale, 0.6), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else if (feature === 'boat' && Array.isArray(geometry)) {
+        // Draw small boat
+        ctx.fillStyle = '#6B4423';
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.2 / safeScale, 0.4);
+        ctx.beginPath();
+        ctx.moveTo(geometry[0].x, geometry[0].y);
+        for (let i = 1; i < geometry.length; i++) {
+          ctx.lineTo(geometry[i].x, geometry[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
       }
     }
     
@@ -4270,6 +5545,41 @@ class CityRenderer {
       ? patch.ward.availableShape 
       : patch.shape;
 
+    // PREPASS: For inside patches near the city wall, paint the whole patch with
+    // the outside terrain colour BEFORE any clipping, so any slivers that extend
+    // outside the wall get covered with green/brown. We'll then overdraw beige
+    // after we set the interior clip below.
+    if (patch.withinCity && this.model.borderShape && this.model.borderShape.length >= 3) {
+      // Compute centroid
+      let cx0 = 0, cy0 = 0; for (const p of shapeToRender) { cx0 += p.x; cy0 += p.y; } cx0 /= shapeToRender.length; cy0 /= shapeToRender.length;
+      // Distance from centroid to wall edges
+      let minDist0 = Infinity;
+      for (let i = 0; i < this.model.borderShape.length; i++) {
+        const a = this.model.borderShape[i];
+        const b = this.model.borderShape[(i + 1) % this.model.borderShape.length];
+        const abx = b.x - a.x, aby = b.y - a.y; const apx = cx0 - a.x, apy = cy0 - a.y;
+        const ab2 = abx*abx + aby*aby || 1e-6; let t = (apx*abx + apy*aby) / ab2; t = Math.max(0, Math.min(1, t));
+        const px = a.x + abx*t, py = a.y + aby*t; const d = Math.hypot(cx0 - px, cy0 - py);
+        if (d < minDist0) minDist0 = d;
+      }
+      const isEdgeInside = minDist0 < 8; // threshold in map units
+      if (isEdgeInside) {
+        // Outside terrain colour using Perlin noise at centroid
+        const n = (PerlinNoise.noise(cx0 * 0.05, cy0 * 0.05) + 1) * 0.5;
+        const h = 85 * (1 - n) + 35 * n;
+        const s = 30 * (1 - n) + 35 * n;
+        const l = 80 * (1 - n) + 82 * n;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+        for (let i = 1; i < shapeToRender.length; i++) ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
+        ctx.closePath();
+        ctx.fillStyle = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
     // Clip to walls: interior for inside-city patches, exterior for outside-city patches
     let clipped = false;
     if (this.model.borderShape && this.model.borderShape.length >= 3) {
@@ -4298,19 +5608,17 @@ class CityRenderer {
         try { ctx.clip('evenodd'); } catch { ctx.clip(); }
       }
     }
-    
-    ctx.beginPath();
-    ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
-    for (let i = 1; i < shapeToRender.length; i++) {
-      ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
-    }
-    ctx.closePath();
-    
-    // Fill based on type
-    if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
-      ctx.fillStyle = '#D4C5A0'; // More distinct tan/sand color for central plaza
+    // Fill logic
+    if (!patch.withinCity) {
+      // Outside city: skip (base terrain layer already draws these)
+    } else if (patch.ward instanceof Castle) {
+      // Castle: skip, let terrain colour show through (castle has its own wall)
+    } else if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
+      ctx.fillStyle = '#D4C5A0'; // More distinct tan/sand colour for central plaza
+      ctx.fill();
     } else if (patch === this.model.citadel) {
-      ctx.fillStyle = '#D5C8B8';
+      ctx.fillStyle = '#D5C8B8';  // Slightly different grey for citadel
+      ctx.fill();
     } else if (patch.ward instanceof Farm) {
       // Different pale brown-green for each farm
       if (!patch.ward.farmColor) {
@@ -4320,10 +5628,12 @@ class CityRenderer {
         patch.ward.farmColor = `hsl(${hue}, ${sat}%, ${light}%)`;
       }
       ctx.fillStyle = patch.ward.farmColor;
+      ctx.fill();
     } else {
-      ctx.fillStyle = '#FEFAF5';
+      // Standard inside ward: no additional fill here; beige base (drawn elsewhere)
+      // will cover interior due to the interior clip above. Any slivers outside
+      // the wall were pre-painted in the PREPASS when near the wall.
     }
-    ctx.fill();
     
     // Draw farm details AFTER fill, within cell bounds
     if (patch.ward instanceof Farm) {
@@ -4343,17 +5653,41 @@ class CityRenderer {
 
   drawWall(ctx, wall) {
     if (wall.length === 0) return;
-    
+
     const gates = this.model.gates || [];
     const safeScale = Math.max(1e-3, this.scale || 1);
     const wallThickness = (StateManager.wallThickness || 2) / safeScale;
+
+    ctx.save();
     
+    // Clip to OUTSIDE castle areas before drawing city wall
+    const castles = this.model.patches.filter(p => p.ward instanceof Castle && p.ward.citadelWall && p.ward.citadelWall.length > 0);
+    if (castles.length > 0) {
+      const M = 1e5;
+      ctx.beginPath();
+      // Big outer rect
+      ctx.moveTo(-M, -M);
+      ctx.lineTo(M, -M);
+      ctx.lineTo(M, M);
+      ctx.lineTo(-M, M);
+      ctx.closePath();
+      // Subtract each castle area
+      for (const patch of castles) {
+        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        }
+        ctx.closePath();
+      }
+      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+    }
+
     ctx.strokeStyle = Palette.dark;
     ctx.lineWidth = wallThickness;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    
-    // Draw the complete wall
+
+    // Draw the complete wall (now clipped to outside castles)
     ctx.beginPath();
     ctx.moveTo(wall[0].x, wall[0].y);
     for (let i = 1; i < wall.length; i++) {
@@ -4362,6 +5696,8 @@ class CityRenderer {
     ctx.closePath();
     ctx.stroke();
     
+    ctx.restore();
+
     // Erase gaps at gates
     if (gates.length > 0) {
       ctx.save();
@@ -4369,13 +5705,13 @@ class CityRenderer {
       ctx.strokeStyle = 'black';
       ctx.lineWidth = wallThickness * 2;
       ctx.lineCap = 'round';
-      
+
       for (const gate of gates) {
         ctx.beginPath();
         ctx.arc(gate.x, gate.y, wallThickness * 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
-      
+
       ctx.restore();
     }
 
@@ -4414,18 +5750,18 @@ class CityRenderer {
         const len = Math.hypot(vx, vy);
         if (!isFinite(len) || len <= 1e-6) return; // nothing to draw
         const ux = vx / len, uy = vy / len; const nx = -uy, ny = ux;
-        
+
         // Robust sizing with clamps to avoid 0 or Infinity
         const safeScale = Math.max(1e-3, this.scale || 1);
         const baseThick = Math.max(0.5, (StateManager.wallThickness || 2));
         const pierLen = Math.max(0.6 / safeScale, (baseThick * 1.2) / safeScale);
         const spacing = Math.max(0.8 / safeScale, pierLen * 1.6);
-        
+
         // Count must be a finite integer and reasonably bounded
         let count = Math.floor(len / spacing);
         if (!isFinite(count) || count < 2) count = 2;
         count = Math.min(count, 200); // hard cap to prevent runaway loops
-        
+
         ctx.save();
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.6 / safeScale, 0.6);
@@ -4533,6 +5869,43 @@ class CityRenderer {
     }
   }
 
+  getWardColourTint(ward) {
+    if (!ward) return null;
+    
+    const colours = {
+      'castle': '#FFD700',    // Gold
+      'cathedral': '#4169E1',      // Royal blue
+      'temple': '#9370DB',         // Medium purple
+      'market': '#faf0e4ff',          // Light beige
+      'slum': '#535151',           // Dim grey
+      'farm': '#D8C8A8',      // Light brown-green
+      'park': '#C8D4A8',      // Light green
+      'plaza': '#D4C5A0',     // Tan/sand
+      'patriciate': '#FF1493',     // Deep pink
+      'merchants': '#00CED1',      // Dark turquoise
+      'craftsmen': '#3d303dff',      // Dark purple
+      'residential': '#32CD32',    // Lime green
+      'administration': '#FF0000', // Bright red
+      'military': '#8B0000'        // Dark red
+    };
+    
+    // Try class name first (normalized to lowercase)
+    const wardClassName = ward.constructor.name.toLowerCase();
+    if (colours[wardClassName]) {
+      return colours[wardClassName];
+    }
+    
+    // Fall back to wardType property (normalized to lowercase)
+    if (ward.wardType) {
+      const wardType = ward.wardType.toLowerCase();
+      if (colours[wardType]) {
+        return colours[wardType];
+      }
+    }
+    
+    return null;
+  }
+
   drawStreet(ctx, street) {
     if (!StateManager.showStreets || street.length < 2) return;
     
@@ -4563,7 +5936,7 @@ class CityRenderer {
     ctx.stroke();
   }
 
-  drawBuildings(ctx, buildings, inside = true) {
+  drawBuildings(ctx, buildings, inside = true, wardType = null) {
     if (!StateManager.showBuildings) return;
     
     const gap = StateManager.lotsMode ? Math.min(this.model.buildingGap, 1.0) : this.model.buildingGap;
@@ -4611,33 +5984,8 @@ class CityRenderer {
       processedBuildings = buildings.filter(b => Array.isArray(b) && b.length > 0);
     }
     
-    // Visual-only clipping: don't draw building pixels where water exists
-    // This preserves buildings elsewhere and avoids global removals
-    let didWaterClip = false;
-    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
-      didWaterClip = true;
-      ctx.save();
-      const M = 1e5;
-      ctx.beginPath();
-      // Big rect
-      ctx.moveTo(-M, -M);
-      ctx.lineTo(M, -M);
-      ctx.lineTo(M, M);
-      ctx.lineTo(-M, M);
-      ctx.closePath();
-      // Subtract each water polygon
-      for (const water of this.model.waterBodies) {
-        if (!water || water.length < 3) continue;
-        ctx.moveTo(water[0].x, water[0].y);
-        for (let i = 1; i < water.length; i++) ctx.lineTo(water[i].x, water[i].y);
-        ctx.closePath();
-      }
-      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
-    }
-
     // Use BuildingPainter for 3D rendering
-    BuildingPainter.paint(ctx, processedBuildings, Palette.roof, Palette.dark, 0.5, this.scale);
-    if (didWaterClip) ctx.restore();
+    BuildingPainter.paint(ctx, processedBuildings, Palette.roof, Palette.dark, 0.5, this.scale, wardType);
     if (didClip) ctx.restore();
   }
 
@@ -4812,15 +6160,19 @@ class CityRenderer {
       ctx.strokeStyle = Palette.dark + '30';
       ctx.lineWidth = Math.max(0.3 / safeScale, w * 0.08);
       const plankSpacing = Math.max(1.0 / safeScale, w * 0.6);
-      const numPlanks = Math.floor(len / plankSpacing);
-      for (let i = 1; i < numPlanks; i++) {
-        const t = i / numPlanks;
-        const px = start.x + vx * t;
-        const py = start.y + vy * t;
-        ctx.beginPath();
-        ctx.moveTo(px - nx * w * 0.5, py - ny * w * 0.5);
-        ctx.lineTo(px + nx * w * 0.5, py + ny * w * 0.5);
-        ctx.stroke();
+      // Prevent division by zero/infinity
+      if (plankSpacing > 0 && isFinite(plankSpacing) && len > 0 && isFinite(len)) {
+        const numPlanks = Math.floor(len / plankSpacing);
+        const safePlanks = Math.min(numPlanks, 50); // Cap at 50 planks max
+        for (let i = 1; i < safePlanks; i++) {
+          const t = i / safePlanks;
+          const px = start.x + vx * t;
+          const py = start.y + vy * t;
+          ctx.beginPath();
+          ctx.moveTo(px - nx * w * 0.5, py - ny * w * 0.5);
+          ctx.lineTo(px + nx * w * 0.5, py + ny * w * 0.5);
+          ctx.stroke();
+        }
       }
     }
     
@@ -4830,16 +6182,16 @@ class CityRenderer {
   drawWaterBodies(ctx, waterBodies) {
     ctx.save();
     
-    // Unified water color - all water uses same color for seamless blending
-    const waterColor = '#A8D5E2';
+    // Unified water colour - all water uses same colour for seamless blending
+    const waterColour = '#A8D5E2';
     
     // Draw all water bodies with FILL ONLY (no strokes) for seamless blending
     for (let wi = 0; wi < waterBodies.length; wi++) {
       const water = waterBodies[wi];
       if (!water || water.length < 3) continue;
       
-      // Use same color for ALL water types (coast, river, canal, pond) for consistent appearance
-      ctx.fillStyle = waterColor;
+      // Use same colour for ALL water types (coast, river, canal, pond) for consistent appearance
+      ctx.fillStyle = waterColour;
       
       // Draw water polygon with FILL ONLY (no stroke = seamless blending)
       ctx.beginPath();
@@ -4898,7 +6250,7 @@ class CityRenderer {
   drawLabel(ctx, patch, labelText) {
     if (!labelText) return;
     
-    // Calculate center of patch
+    // Calculate centre of patch
     let cx = 0, cy = 0;
     for (const p of patch.shape) {
       cx += p.x;
@@ -4947,8 +6299,8 @@ class CityRenderer {
     return heights[wardType] || 6;
   }
 
-  getWardColor3D(wardType) {
-    const colors = {
+  getWardColour3D(wardType) {
+    const colours = {
       'castle': '#9B8D7B',
       'cathedral': '#4169E1',      // Royal blue
       'temple': '#9370DB',         // Medium purple
@@ -4964,7 +6316,7 @@ class CityRenderer {
       'administration': '#FF0000', // Bright red
       'military': '#8B0000'        // Dark red
     };
-    return colors[wardType] || '#A89878';
+    return colours[wardType] || '#A89878';
   }
 
   calculatePolygonArea(polygon) {
@@ -5223,7 +6575,7 @@ class CityRenderer {
         
         wardBuildings.push({
           mesh: mesh,
-          color: this.getWardColor3D(wardType),
+          color: this.getWardColour3D(wardType),
           wardType: wardType,
           height: buildingHeight
         });
@@ -5347,7 +6699,7 @@ class CityRenderer {
     const cameraDistance = cityRadius * 1.2 * 64;  // Scale 64x
     const angle = StateManager.camera3DAngle;
     
-    // Apply pan offset from 2D view (inverted to match 2D camera behavior)
+    // Apply pan offset from 2D view (inverted to match 2D camera behaviour)
     const panX = -StateManager.cameraOffsetX / StateManager.zoom * 64;  // Scale 64x
     const panZ = -StateManager.cameraOffsetY / StateManager.zoom * 64;  // Scale 64x
     
@@ -5472,15 +6824,9 @@ class CityRenderer {
       // Limit buildings based on slider count
       const maxBuildings = Math.min(StateManager.buildingCount, scene.buildings.length);
       const visibleBuildings = scene.buildings.slice(0, maxBuildings);
-      
-      // console.log(`Rendering ${visibleBuildings.length} of ${scene.buildings.length} buildings`);
-      
+
       for (let i = 0; i < visibleBuildings.length; i++) {
         const building = visibleBuildings[i];
-        
-        // if (i < 3) {
-        //   console.log(`Building ${i}: ${building.mesh.vertices.length} vertices, ${building.mesh.faces.length} faces, color: ${building.color}`);
-        // }
         
         // Project all triangles and add to global list
         for (const face of building.mesh.faces) {
@@ -5594,10 +6940,10 @@ class CityRenderer {
       // Check if this triangle is hovered
       const isHovered = this.lastHoveredBuilding && tri === this.lastHoveredBuilding;
       
-      // Shade color (or use yellow if hovered)
-      let shadedColor;
+      // Shade colour (or use yellow if hovered)
+      let shadedColour;
       if (isHovered) {
-        shadedColor = '#FFFF00'; // Bright yellow for hovered building
+        shadedColour = '#FFFF00'; // Bright yellow for hovered building
       } else {
         const hex = tri.color.replace('#', '');
         let r = parseInt(hex.substr(0, 2), 16);
@@ -5606,10 +6952,10 @@ class CityRenderer {
         r = Math.floor(r * tri.brightness);
         g = Math.floor(g * tri.brightness);
         b = Math.floor(b * tri.brightness);
-        shadedColor = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        shadedColour = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
       }
       
-      ctx.fillStyle = shadedColor;
+      ctx.fillStyle = shadedColour;
       ctx.fill();
       
       if (tri.stroke !== 'transparent' || isHovered) {
@@ -5671,19 +7017,26 @@ class BuildingPainter {
    * Paint building polygons with roofs and walls
    * @param {CanvasRenderingContext2D} ctx - Canvas context
    * @param {Array<Array<Point>>} buildings - Array of building polygons
-   * @param {string} roofColor - Color for roofs
-   * @param {string} outlineColor - Color for outlines
+   * @param {string} roofColour - Colour for roofs
+   * @param {string} outlineColour - Colour for outlines
    * @param {number} raised - Height factor for 3D effect (default 0.5)
    * @param {number} scale - Rendering scale
+   * @param {string} wardColourTint - Optional ward colour for subtle tinting (hex colour)
    */
-  static paint(ctx, buildings, roofColor, outlineColor, raised = 0.5, scale = 1) {
+  static paint(ctx, buildings, roofColour, outlineColour, raised = 0.5, scale = 1, wardColourTint = null) {
     const strokeWidth = 0.5 / scale;
     let wallOffset = 0;
+
+    // Blend base roof colour with ward tint if provided (25% tint for better visibility)
+    let baseRoofColour = roofColour;
+    if (wardColourTint) {
+      baseRoofColour = this.blendColours(roofColour, wardColourTint, 0.25);
+    }
     
     // Draw 3D walls if raised
     if (raised > 0) {
       wallOffset = -1.2 * raised;
-      const wallColor = Palette.dark;
+      const wallColour = Palette.dark;
       
       for (const building of buildings) {
         // Find vertical edges for wall drawing
@@ -5702,27 +7055,27 @@ class BuildingPainter {
             }
           } else if (wallSegment) {
             // End wall segment and draw it
-            this.drawWallSegment(ctx, wallSegment, wallOffset, wallColor, outlineColor, strokeWidth);
+            this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, strokeWidth);
             wallSegment = null;
           }
         }
         
         // Draw final segment if exists
         if (wallSegment) {
-          this.drawWallSegment(ctx, wallSegment, wallOffset, wallColor, outlineColor, strokeWidth);
+          this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, strokeWidth);
         }
       }
     }
     
-    // Draw roofs with slight color variation
+    // Draw roofs with slight colour variation
     for (const building of buildings) {
-      // Add slight random variation to roof color
+      // Add slight random variation to roof colour
       const weathering = 0.1;
       const variance = (Random.float() + Random.float() + Random.float()) / 3 * 2 - 1;
-      const variedRoof = this.scaleColor(roofColor, Math.pow(2, variance * weathering));
+      const variedRoof = this.scaleColour(baseRoofColour, Math.pow(2, variance * weathering));
       
       ctx.fillStyle = variedRoof;
-      ctx.strokeStyle = outlineColor;
+      ctx.strokeStyle = outlineColour;
       ctx.lineWidth = strokeWidth;
       
       ctx.beginPath();
@@ -5743,18 +7096,18 @@ class BuildingPainter {
       ctx.stroke();
       
       // Draw roof details (simplified straight skeleton)
-      this.drawRoofDetails(ctx, building, wallOffset, strokeWidth, outlineColor);
+      this.drawRoofDetails(ctx, building, wallOffset, strokeWidth, outlineColour);
     }
   }
   
-  static drawWallSegment(ctx, segment, offset, wallColor, outlineColor, strokeWidth) {
+  static drawWallSegment(ctx, segment, offset, wallColour, outlineColour, strokeWidth) {
     // Create bottom edge of wall
     const bottom = segment.map(p => new Point(p.x, p.y - offset));
     bottom.reverse();
     
     // Draw wall face
-    ctx.fillStyle = wallColor;
-    ctx.strokeStyle = outlineColor;
+    ctx.fillStyle = wallColour;
+    ctx.strokeStyle = outlineColour;
     ctx.lineWidth = strokeWidth;
     
     ctx.beginPath();
@@ -5769,9 +7122,9 @@ class BuildingPainter {
     ctx.fill();
     ctx.stroke();
     
-    // Draw vertical edges if wall color differs from outline
-    if (wallColor !== outlineColor) {
-      ctx.strokeStyle = outlineColor;
+    // Draw vertical edges if wall colour differs from outline
+    if (wallColour !== outlineColour) {
+      ctx.strokeStyle = outlineColour;
       for (let i = 1; i < segment.length - 1; i++) {
         const p = segment[i];
         ctx.beginPath();
@@ -5782,8 +7135,8 @@ class BuildingPainter {
     }
   }
   
-  static drawRoofDetails(ctx, building, offset, strokeWidth, color) {
-    // Simplified roof detail - just draw towards center
+  static drawRoofDetails(ctx, building, offset, strokeWidth, colour) {
+    // Simplified roof detail - just draw towards centre
     const center = {x: 0, y: 0};
     for (const p of building) {
       center.x += p.x;
@@ -5792,10 +7145,10 @@ class BuildingPainter {
     center.x /= building.length;
     center.y /= building.length;
     
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = colour;
     ctx.lineWidth = strokeWidth;
     
-    // Draw lines from edges toward center for some edges
+    // Draw lines from edges towards centre for some edges
     for (let i = 0; i < building.length; i++) {
       if (Random.chance(0.3)) { // Only some edges
         const p = building[i];
@@ -5803,7 +7156,7 @@ class BuildingPainter {
         const dy = center.y - p.y;
         const len = Math.sqrt(dx * dx + dy * dy);
         
-        if (len > 2) { // Only if not too close to center
+        if (len > 2) { // Only if not too close to centre
           const ratio = 0.3;
           const endX = p.x + dx * ratio;
           const endY = p.y + dy * ratio + offset;
@@ -5817,9 +7170,30 @@ class BuildingPainter {
     }
   }
   
-  static scaleColor(colorHex, factor) {
-    // Parse hex color
-    const hex = colorHex.replace('#', '');
+  static blendColours(colour1, colour2, ratio) {
+    // Parse first colour
+    const hex1 = colour1.replace('#', '');
+    const r1 = parseInt(hex1.substr(0, 2), 16);
+    const g1 = parseInt(hex1.substr(2, 2), 16);
+    const b1 = parseInt(hex1.substr(4, 2), 16);
+    
+    // Parse second colour
+    const hex2 = colour2.replace('#', '');
+    const r2 = parseInt(hex2.substr(0, 2), 16);
+    const g2 = parseInt(hex2.substr(2, 2), 16);
+    const b2 = parseInt(hex2.substr(4, 2), 16);
+    
+    // Blend
+    const r = Math.floor(r1 * (1 - ratio) + r2 * ratio);
+    const g = Math.floor(g1 * (1 - ratio) + g2 * ratio);
+    const b = Math.floor(b1 * (1 - ratio) + b2 * ratio);
+    
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+
+  static scaleColour(colourHex, factor) {
+    // Parse hex colour
+    const hex = colourHex.replace('#', '');
     let r = parseInt(hex.substr(0, 2), 16);
     let g = parseInt(hex.substr(2, 2), 16);
     let b = parseInt(hex.substr(4, 2), 16);
@@ -5847,12 +7221,12 @@ class FarmPainter {
    */
   static paint(ctx, farm, scale = 1) {
     const strokeWidth = 0.5 / scale;
-    const greenColor = Palette.light;
-    const darkColor = Palette.dark;
+    const greenColour = Palette.light;
+    const darkColour = Palette.dark;
     
     // Draw field plots
-    ctx.fillStyle = greenColor;
-    ctx.strokeStyle = darkColor;
+    ctx.fillStyle = greenColour;
+    ctx.strokeStyle = darkColour;
     ctx.lineWidth = strokeWidth;
     
     for (const plot of farm.subPlots || []) {
@@ -5868,7 +7242,7 @@ class FarmPainter {
     
     // Draw furrows (plowed lines)
     if (farm.furrows && farm.furrows.length > 0) {
-      ctx.strokeStyle = darkColor;
+      ctx.strokeStyle = darkColour;
       ctx.lineWidth = strokeWidth * 0.5;
       
       for (const furrow of farm.furrows) {
@@ -5881,7 +7255,7 @@ class FarmPainter {
     
     // Draw any farm buildings
     if (farm.buildings && farm.buildings.length > 0) {
-      BuildingPainter.paint(ctx, farm.buildings, Palette.roof, darkColor, 0.3, scale);
+      BuildingPainter.paint(ctx, farm.buildings, Palette.roof, darkColour, 0.3, scale);
     }
   }
 }
@@ -6045,7 +7419,7 @@ class FocusView {
 
 /**
  * PatchView - renders individual patches (ward cells)
- * Handles fill colors, patterns, and details for each ward type
+ * Handles fill colours, patterns, and details for each ward type
  */
 class PatchView {
   constructor(patch, palette, settings) {
@@ -6076,7 +7450,8 @@ class PatchView {
       didClip = true;
       ctx.save();
       ctx.beginPath();
-      if (patch.inside) {
+      // Use withinCity flag consistently
+      if (patch.withinCity) {
         // Interior clip
         ctx.moveTo(wall[0].x, wall[0].y);
         for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
@@ -6101,8 +7476,18 @@ class PatchView {
       }
     }
 
-    // Fill the patch with ward color
-    ctx.fillStyle = patch.color || this.palette.light;
+    // Fill the patch: override to terrain tones for outside cells
+    let fillColour = patch.color || this.palette.light;
+    if (!patch.withinCity) {
+      // Compute soft terrain tint based on centroid noise (match drawOutsideTerrain)
+      let cx = 0, cy = 0; for (const p of shapeToRender) { cx += p.x; cy += p.y; } cx /= shapeToRender.length; cy /= shapeToRender.length;
+      const n = (PerlinNoise.noise(cx * 0.05, cy * 0.05) + 1) * 0.5;
+      const h = 85 * (1 - n) + 35 * n;
+      const s = 30 * (1 - n) + 35 * n;
+      const l = 80 * (1 - n) + 82 * n;
+      fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+    }
+    ctx.fillStyle = fillColour;
     ctx.strokeStyle = this.palette.dark;
     ctx.lineWidth = showCellOutlines ? 0.5 : 0;
     
@@ -6143,7 +7528,7 @@ class PatchView {
         );
       }
       
-      BuildingPainter.paint(ctx, processedBuildings, this.palette.roof, this.palette.dark, 0.5, 1);
+      BuildingPainter.paint(ctx, processedBuildings, this.palette.roof, this.palette.dark, 0.5, 1, patch.wardColorTint);
     }
     
     // Draw farm details if this is a farm
@@ -6310,13 +7695,50 @@ class WallsView {
     
     ctx.save();
     
-    // Draw wall segments
+    // Separate city walls from citadel walls
+    const cityWalls = this.walls.filter(w => !w.isCitadel);
+    const citadelWalls = this.walls.filter(w => w.isCitadel);
+    
+    // Clip to OUTSIDE castle areas before drawing city walls
+    if (citadelWalls.length > 0) {
+      ctx.save();
+      const M = 1e5;
+      ctx.beginPath();
+      // Big outer rect
+      ctx.moveTo(-M, -M);
+      ctx.lineTo(M, -M);
+      ctx.lineTo(M, M);
+      ctx.lineTo(-M, M);
+      ctx.closePath();
+      // Subtract each castle area
+      for (const citadel of citadelWalls) {
+        if (citadel.path && citadel.path.length > 0) {
+          ctx.moveTo(citadel.path[0].x, citadel.path[0].y);
+          for (let i = 1; i < citadel.path.length; i++) {
+            ctx.lineTo(citadel.path[i].x, citadel.path[i].y);
+          }
+          ctx.closePath();
+        }
+      }
+      try { ctx.clip('evenodd'); } catch { ctx.clip(); }
+    }
+    
+    // Draw city wall segments (now clipped to outside castles)
     ctx.strokeStyle = this.palette.dark;
     ctx.lineWidth = this.settings.wallThickness || 5;
     ctx.lineCap = 'square';
     ctx.lineJoin = 'miter';
     
-    for (const wall of this.walls) {
+    for (const wall of cityWalls) {
+      this.drawWallSegment(ctx, wall);
+    }
+    
+    if (citadelWalls.length > 0) {
+      ctx.restore();
+    }
+    
+    // Draw citadel walls
+    for (const wall of citadelWalls) {
       this.drawWallSegment(ctx, wall);
     }
     
@@ -6353,12 +7775,35 @@ class WallsView {
   drawWallSegment(ctx, wall) {
     if (!wall.path || wall.path.length < 2) return;
     
+    const wallThickness = this.settings.wallThickness || 5;
+    
     ctx.beginPath();
     ctx.moveTo(wall.path[0].x, wall.path[0].y);
     for (let i = 1; i < wall.path.length; i++) {
       ctx.lineTo(wall.path[i].x, wall.path[i].y);
     }
+    // Only close path for non-citadel walls
+    if (!wall.isCitadel) {
+      ctx.closePath();
+    }
     ctx.stroke();
+    
+    // Erase gaps at gates
+    if (wall.gates && wall.gates.length > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = wallThickness * 2;
+      ctx.lineCap = 'round';
+      
+      for (const gate of wall.gates) {
+        ctx.beginPath();
+        ctx.arc(gate.x, gate.y, wallThickness * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      ctx.restore();
+    }
   }
   
   drawTower(ctx, tower) {
@@ -7045,7 +8490,7 @@ class TownGenerator {
     this.renderer.globalTrees = null;
     this.renderer.render();
     
-    console.log('Generated city with seed:', StateManager.seed, 'size:', StateManager.size);
+    console.log('City generated:', { seed: StateManager.seed, size: StateManager.size });
   }
   
   toggleFlythrough() {
@@ -7060,7 +8505,7 @@ class TownGenerator {
       StateManager.flythroughActive = false;
       this.render();
     } else {
-      console.log('Starting flythrough - first person camera at 6ft height');
+      console.log('Flythrough start');
       StateManager.flythroughActive = true;
       this.flythroughCamera.start();
     }
@@ -7073,7 +8518,7 @@ class TownGenerator {
     
     // Restart camera if flythrough is active but camera stopped
     if (StateManager.flythroughActive && this.camera && !this.camera.active) {
-      console.log('Restarting stopped flythrough camera');
+      // Debug (suppressed): restarting stopped flythrough camera
       this.camera.start();
     }
   }

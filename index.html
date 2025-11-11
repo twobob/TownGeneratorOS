@@ -193,7 +193,6 @@
           '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
           '<label><input type="checkbox" id="walls-check" checked> Walls</label>' +
           '<label><input type="checkbox" id="labels-check"> Show Labels</label>' +
-          '<label><input type="checkbox" id="cell-outlines-check"> Show Cell Outlines</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
           '<label><input type="checkbox" id="show-water-check"> Show Water</label>' +
@@ -394,10 +393,6 @@
           generator.render();
         });
         
-        document.getElementById('cell-outlines-check').addEventListener('change', function() {
-          StateManager.showCellOutlines = this.checked;
-          generator.render();
-        });
         
         document.getElementById('buildings-check').addEventListener('change', function() {
           StateManager.showBuildings = this.checked;
@@ -448,8 +443,6 @@
           StateManager.canal = this.checked ? 1 : 0;
           generator.generate();
         });
-        
-        // Coast checkbox
         document.getElementById('coast-check').addEventListener('change', function() {
           StateManager.coast = this.checked ? 1 : 0;
           generator.generate();
@@ -463,7 +456,6 @@
         syncCheckbox('citadel-check', StateManager.citadelNeeded);
         syncCheckbox('walls-check', StateManager.wallsNeeded);
         syncCheckbox('labels-check', StateManager.showLabels);
-        syncCheckbox('cell-outlines-check', StateManager.showCellOutlines);
         syncCheckbox('buildings-check', StateManager.showBuildings);
         syncCheckbox('streets-check', StateManager.showStreets);
         syncCheckbox('show-water-check', StateManager.showWater);
@@ -536,7 +528,7 @@
         }
 
         document.getElementById('regenerate-btn').addEventListener('click', function() {
-          console.log('Regenerate button clicked');
+          // Reduced logging: regeneration triggered
           StateManager.seed = -1;
           StateManager.size = parseInt(sizeSlider.value);
           StateManager.plazaNeeded = document.getElementById('plaza-check').checked;
@@ -554,7 +546,7 @@
         });
 
         document.getElementById('apply-btn').addEventListener('click', function() {
-          console.log('Apply button clicked');
+          // Reduced logging: apply settings triggered
           StateManager.size = parseInt(sizeSlider.value);
           StateManager.plazaNeeded = document.getElementById('plaza-check').checked;
           StateManager.citadelNeeded = document.getElementById('citadel-check').checked;
