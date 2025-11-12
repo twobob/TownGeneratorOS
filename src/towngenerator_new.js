@@ -22,6 +22,23 @@ const RENDER_3D_CONFIG = {
                                    // Override in console: RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD = 1.0
 };
 
+// Voronoi Diagram Configuration
+const VORONOI_RELAXATION_ITERATIONS = 2;  // Number of Lloyd's relaxation iterations to apply to Voronoi diagram
+                                           // Higher values create more uniform cell sizes (0-10 recommended)
+
+// Chaikin Smoothing Configuration = TODO  this is not respected by the eliding algorithm yet
+// Nor is it used in pathfinding et cetera
+const CHAIKIN_SMOOTHING_ITERATIONS = 0;  // Number of Chaikin corner-cutting iterations for polygon smoothing
+                                         // Higher values create smoother curves (0-4 recommended)
+
+// Polygon Smoothing Configuration
+const POLYGON_SMOOTHING_PASSES = 3;  // Default number of Laplacian smoothing passes for polygons
+                                     // Used for coastlines, borders, and water bodies (0-10 recommended)
+
+// Urquhart Graph Configuration
+const APPLY_URQUHART_GRAPH = false;  // Apply Urquhart graph filtering to Delaunay triangulation
+                                    // Removes longest edge from each triangle, creating a sparser graph
+
 // ============================================================================
 // Utility Classes
 // ============================================================================
@@ -189,6 +206,24 @@ class Triangle {
     return (this.p1 === a && this.p2 === b) || (this.p2 === a && this.p3 === b) ||
            (this.p3 === a && this.p1 === b);
   }
+
+  /**
+   * Get the longest edge of this triangle
+   * @returns {{a: Point, b: Point, length: number}} The longest edge with its endpoints and length
+   */
+  getLongestEdge() {
+    const edge12 = Point.distance(this.p1, this.p2);
+    const edge23 = Point.distance(this.p2, this.p3);
+    const edge31 = Point.distance(this.p3, this.p1);
+    
+    if (edge12 >= edge23 && edge12 >= edge31) {
+      return { a: this.p1, b: this.p2, length: edge12 };
+    } else if (edge23 >= edge12 && edge23 >= edge31) {
+      return { a: this.p2, b: this.p3, length: edge23 };
+    } else {
+      return { a: this.p3, b: this.p1, length: edge31 };
+    }
+  }
 }
 
 class Region {
@@ -259,6 +294,37 @@ class Voronoi {
     }
     
     return Voronoi.build(newPoints);
+  }
+
+  /**
+   * Apply Urquhart graph filtering to the Delaunay triangulation
+   * Marks the longest edge from each triangle for removal
+   * Creates a sparser graph that approximates the relative neighborhood graph
+   * Note: Edges are marked but triangulation is kept intact for Voronoi generation
+   */
+  applyUrquhartGraph() {
+    // Collect all edges to mark as removed (longest edge from each triangle)
+    const edgesToRemove = new Set();
+    
+    for (const triangle of this.triangles) {
+      const longest = triangle.getLongestEdge();
+      // Create a canonical edge key (smaller point first)
+      const key = longest.a.x < longest.b.x || 
+                  (longest.a.x === longest.b.x && longest.a.y < longest.b.y)
+                  ? `${longest.a.x},${longest.a.y}-${longest.b.x},${longest.b.y}`
+                  : `${longest.b.x},${longest.b.y}-${longest.a.x},${longest.a.y}`;
+      edgesToRemove.add(key);
+      
+      // Mark the edge on the triangle for later filtering
+      triangle.urquhartLongestEdge = longest;
+    }
+    
+    // Store the removed edges for potential visualization or analysis
+    this.urquhartRemovedEdges = Array.from(edgesToRemove);
+    
+    console.log('Urquhart graph: marked', edgesToRemove.size, 'longest edges from', this.triangles.length, 'triangles');
+    
+    return edgesToRemove;
   }
 
   addPoint(p) {
@@ -488,6 +554,49 @@ class Polygon {
     centre.x /= polygon.length;
     centre.y /= polygon.length;
     return centre;
+  }
+  
+  /**
+   * Chaikin's corner-cutting algorithm for smooth curves
+   * Creates a smooth curve by iteratively cutting corners
+   * @param {Point[]} polygon - The polygon to smooth
+   * @param {boolean} closed - Whether the polygon is closed
+   * @param {number} iterations - Number of smoothing passes
+   * @returns {Point[]} Smoothed polygon
+   */
+  static chaikin(polygon, closed = true, iterations = CHAIKIN_SMOOTHING_ITERATIONS) {
+    if (!polygon || polygon.length < 2) return polygon;
+    
+    let result = polygon.slice();
+    
+    for (let iter = 0; iter < iterations; iter++) {
+      const smoothed = [];
+      const len = result.length;
+      
+      for (let i = 0; i < (closed ? len : len - 1); i++) {
+        const p0 = result[i];
+        const p1 = result[(i + 1) % len];
+        
+        // Cut corner: create two new points at 1/4 and 3/4 along the edge
+        smoothed.push(new Point(
+          p0.x * 0.75 + p1.x * 0.25,
+          p0.y * 0.75 + p1.y * 0.25
+        ));
+        smoothed.push(new Point(
+          p0.x * 0.25 + p1.x * 0.75,
+          p0.y * 0.25 + p1.y * 0.75
+        ));
+      }
+      
+      // For open polylines, add the final point back
+      if (!closed) {
+        smoothed.push(result[len - 1]);
+      }
+      
+      result = smoothed;
+    }
+    
+    return result;
   }
   
   /**
@@ -2042,18 +2151,314 @@ if (typeof PerlinNoise === 'undefined') {
 
 class Slum extends Ward {
   buildGeometry() {
-    // Slums have dense, irregular buildings with narrow alleys
-    // More chaotic than normal wards
-    const shrunkBlock = this.shrinkPolygon(this.shape, 2);
+    // Slums have organic clusters of buildings along alleyway curves
     
-    // Create very dense alleys with small buildings
-    this.geometry = this.createAlleys(
-      shrunkBlock,
-      8,      // Smaller building size
-      0.05,   // Very narrow gaps
-      0.15,   // More irregular
-      Random.chance(0.3) // Less likely to be rectangular
-    );
+    // Get ALL exterior alley paths - don't filter by distance
+    const relevantAlleys = [];
+    
+    if (this.model.exteriorRoads) {
+      for (const road of this.model.exteriorRoads) {
+        if (road.isAlley) {
+          relevantAlleys.push(road);
+        }
+      }
+    }
+    
+    // Create organic clusters along alleys using box packing
+    this.geometry = this.createOrganicClustersAlongAlleys(this.shape, relevantAlleys);
+  }
+  
+  createOrganicClustersAlongAlleys(wardShape, alleys) {
+    if (!alleys || alleys.length === 0) {
+      // No alleys - sparse scattered buildings
+      const shrunkBlock = this.shrinkPolygon(wardShape, 2);
+      const buildings = this.createAlleys(shrunkBlock, 12, 0.15, 0.25, Random.chance(0.2));
+      // Keep only 30% for sparse straggling effect
+      return buildings.filter(() => Random.float() < 0.3);
+    }
+    
+    const buildings = [];
+    const alleyWidth = this.model.alleyWidth || 1.8;
+    
+    // Find streets (non-alley roads)
+    const streets = (this.model.exteriorRoads || []).filter(r => !r.isAlley);
+    
+    // For each alley, determine its distance from streets
+    const alleyStreetDistances = new Map();
+    for (const alley of alleys) {
+      let minDist = Infinity;
+      for (const pt of alley) {
+        for (const street of streets) {
+          for (let j = 0; j < street.length - 1; j++) {
+            const dist = this.model.pointToSegmentDistance(pt, street[j], street[j + 1]);
+            if (dist < minDist) minDist = dist;
+          }
+        }
+      }
+      alleyStreetDistances.set(alley, minDist);
+    }
+    
+    // Use lots-mode tessellation for the entire ward instead of strips along alleys
+    const shrunkBlock = this.shrinkPolygon(wardShape, 2);
+    const allBuildings = this.createAlleysAvoidingPaths(shrunkBlock, 10, 0.12, 0.3, Random.chance(0.3));
+    
+    // Filter buildings using hierarchical street/alley proximity
+    for (const building of allBuildings) {
+      const bCenter = building.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+      bCenter.x /= building.length;
+      bCenter.y /= building.length;
+      
+      // Check distance from alleys
+      let tooCloseToAlley = false;
+      let minAlleyDist = Infinity;
+      let closestAlley = null;
+      
+      for (const checkAlley of alleys) {
+        for (let j = 0; j < checkAlley.length - 1; j++) {
+          const dist = this.model.pointToSegmentDistance(bCenter, checkAlley[j], checkAlley[j + 1]);
+          if (dist < minAlleyDist) {
+            minAlleyDist = dist;
+            closestAlley = checkAlley;
+          }
+          if (dist < alleyWidth * 1.2) {
+            tooCloseToAlley = true;
+            break;
+          }
+        }
+        if (tooCloseToAlley) break;
+      }
+      
+      // Check distance from streets
+      let tooCloseToStreet = false;
+      let minStreetDistFromBuilding = Infinity;
+      
+      for (const street of streets) {
+        for (let j = 0; j < street.length - 1; j++) {
+          const dist = this.model.pointToSegmentDistance(bCenter, street[j], street[j + 1]);
+          if (dist < minStreetDistFromBuilding) minStreetDistFromBuilding = dist;
+          if (dist < alleyWidth * 2.0) {
+            tooCloseToStreet = true;
+            break;
+          }
+        }
+        if (tooCloseToStreet) break;
+      }
+      
+      if (tooCloseToAlley || tooCloseToStreet || !this.pointInPolygon(bCenter, wardShape)) {
+        continue;
+      }
+      
+      // Apply hierarchical street proximity filtering
+      // Priority 1: Near streets (primary - highest density)
+      // Priority 2: Near alleys that are close to streets (secondary - medium density)
+      // Priority 3: Near alleys far from streets (tertiary - lowest density)
+      
+      const streetThreshold = alleyWidth * 15;
+      let placementProbability = 0;
+      
+      // Priority 1: Building is near a street directly
+      if (minStreetDistFromBuilding < streetThreshold) {
+        const streetProximity = 1 - (minStreetDistFromBuilding / streetThreshold);
+        placementProbability = Math.pow(streetProximity, 0.3) * 0.8;
+      }
+      // Priority 2 & 3: Building is near an alley
+      else if (closestAlley && minAlleyDist < alleyWidth * 8) {
+        // Find how close this alley is to streets
+        const alleyDistFromStreet = alleyStreetDistances.get(closestAlley) || Infinity;
+        
+        if (alleyDistFromStreet < alleyWidth * 20) {
+          // Priority 2: Alley is close to streets
+          const alleyStreetProximity = 1 - Math.min(1, alleyDistFromStreet / (alleyWidth * 20));
+          const alleyProximity = 1 - (minAlleyDist / (alleyWidth * 8));
+          placementProbability = Math.pow(alleyStreetProximity, 0.5) * alleyProximity * 0.5;
+        } else {
+          // Priority 3: Alley is far from streets
+          const alleyProximity = 1 - (minAlleyDist / (alleyWidth * 8));
+          placementProbability = alleyProximity * 0.2;
+        }
+      }
+      
+      // Apply sparse placement multiplier
+      if (Random.float() < placementProbability * 0.4) {
+        buildings.push(building);
+      }
+    }
+    
+    return buildings;
+  }
+  
+  pointNearPolygon(pt, poly, threshold) {
+    // Check if point is within threshold distance of polygon
+    for (let i = 0; i < poly.length; i++) {
+      const p0 = poly[i];
+      const p1 = poly[(i + 1) % poly.length];
+      const dist = this.model.pointToSegmentDistance(pt, p0, p1);
+      if (dist < threshold) return true;
+    }
+    return false;
+  }
+  
+  pointInPolygon(pt, poly) {
+    // Ray casting algorithm to check if point is inside polygon
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j].x, yj = poly[j].y;
+      
+      const intersect = ((yi > pt.y) !== (yj > pt.y))
+        && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+  
+  createAlleysRespectingNetwork(polygon, minSq, gridChaos, sizeChaos, split, alleys, depth = 0) {
+    // Don't place buildings where alleys are - use modified createAlleys that checks alleys
+    return this.createAlleysAvoidingPaths(polygon, minSq, gridChaos, sizeChaos, split, alleys, 0);
+  }
+  
+  createAlleysAvoidingPaths(polygon, minSq, gridChaos, sizeChaos, split, alleyPaths, depth = 0) {
+    const maxDepth = StateManager.lotsMode ? 12 : 10;
+    const area0 = this.polygonArea(polygon);
+    if (!polygon || polygon.length < 3 || area0 <= 0.001 || depth >= maxDepth) {
+      // Before accepting as building, check it doesn't overlap alleys
+      if (area0 > 0 && alleyPaths && alleyPaths.length > 0) {
+        const center = polygon.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+        center.x /= polygon.length;
+        center.y /= polygon.length;
+        
+        // Check if building center is too close to any alley
+        const alleyThreshold = (this.model.alleyWidth || 1.8) * 1.5;
+        for (const alley of alleyPaths) {
+          for (let i = 0; i < alley.length - 1; i++) {
+            const dist = this.model.pointToSegmentDistance(center, alley[i], alley[i + 1]);
+            if (dist < alleyThreshold) {
+              return []; // Skip this building - too close to alley
+            }
+          }
+        }
+      }
+      return area0 > 0 ? [polygon] : [];
+    }
+    
+    // Find longest edge and split (same as createAlleys)
+    let longestIdx = 0;
+    let maxLength = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const p0 = polygon[i];
+      const p1 = polygon[(i + 1) % polygon.length];
+      const len = Point.distance(p0, p1);
+      if (len > maxLength) {
+        maxLength = len;
+        longestIdx = i;
+      }
+    }
+
+    const v0 = polygon[longestIdx];
+    const v1 = polygon[(longestIdx + 1) % polygon.length];
+    
+    const spread = 0.8 * gridChaos;
+    const ratio = (1 - spread) / 2 + Random.float() * spread;
+    const angleSpread = Math.PI / 6 * gridChaos;
+    const angleOffset = (Random.float() - 0.5) * angleSpread;
+    
+    const splitX = v0.x + (v1.x - v0.x) * ratio;
+    const splitY = v0.y + (v1.y - v0.y) * ratio;
+    
+    const dx = v1.x - v0.x;
+    const dy = v1.y - v0.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 0.1) return [];
+    
+    const nx = dx / len;
+    const ny = dy / len;
+    const perpX = -ny * Math.cos(angleOffset) - nx * Math.sin(angleOffset);
+    const perpY = nx * Math.cos(angleOffset) - ny * Math.sin(angleOffset);
+    
+    const alleyWidth = split ? (this.model.alleyWidth || 0.6) : 0;
+    const cutP1 = new Point(splitX, splitY);
+    const cutP2 = new Point(splitX + perpX * 1000, splitY + perpY * 1000);
+    
+    const halves = this.cutPolygon(polygon, cutP1, cutP2, alleyWidth);
+    if (!halves || halves.length < 2) {
+      if (area0 < minSq) {
+        // Check alley proximity before accepting
+        const center = polygon.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+        center.x /= polygon.length;
+        center.y /= polygon.length;
+        const alleyThreshold = (this.model.alleyWidth || 1.8) * 1.5;
+        if (alleyPaths) {
+          for (const alley of alleyPaths) {
+            for (let i = 0; i < alley.length - 1; i++) {
+              const dist = this.model.pointToSegmentDistance(center, alley[i], alley[i + 1]);
+              if (dist < alleyThreshold) return [];
+            }
+          }
+        }
+        return [polygon];
+      }
+      const center = polygon.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+      center.x/=polygon.length; center.y/=polygon.length;
+      const shrunk = polygon.map(p=>new Point(center.x+(p.x-center.x)*0.98, center.y+(p.y-center.y)*0.98));
+      return [shrunk];
+    }
+    
+    const buildings = [];
+    for (const half of halves) {
+      const area = this.polygonArea(half);
+      const sizeVariation = Math.pow(2, 4 * sizeChaos * (Random.float() - 0.5));
+      if (area < minSq * sizeVariation) {
+        const skipChance = StateManager.lotsMode ? 0.0 : 0.04;
+        if (Random.float() > skipChance) {
+          // Check alley before adding
+          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+          center.x /= half.length;
+          center.y /= half.length;
+          const alleyThreshold = (this.model.alleyWidth || 1.8) * 1.5;
+          let tooClose = false;
+          if (alleyPaths) {
+            for (const alley of alleyPaths) {
+              for (let i = 0; i < alley.length - 1; i++) {
+                const dist = this.model.pointToSegmentDistance(center, alley[i], alley[i + 1]);
+                if (dist < alleyThreshold) {
+                  tooClose = true;
+                  break;
+                }
+              }
+              if (tooClose) break;
+            }
+          }
+          if (!tooClose) buildings.push(half);
+        }
+      } else {
+        const shouldSplit = StateManager.lotsMode ? (area > minSq * 1.25) : (area > minSq / (Random.float() * Random.float()));
+        if (shouldSplit) {
+          buildings.push(...this.createAlleysAvoidingPaths(half, minSq, gridChaos, sizeChaos, shouldSplit, alleyPaths, depth + 1));
+        } else {
+          // Check alley before adding
+          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+          center.x /= half.length;
+          center.y /= half.length;
+          const alleyThreshold = (this.model.alleyWidth || 1.8) * 1.5;
+          let tooClose = false;
+          if (alleyPaths) {
+            for (const alley of alleyPaths) {
+              for (let i = 0; i < alley.length - 1; i++) {
+                const dist = this.model.pointToSegmentDistance(center, alley[i], alley[i + 1]);
+                if (dist < alleyThreshold) {
+                  tooClose = true;
+                  break;
+                }
+              }
+              if (tooClose) break;
+            }
+          }
+          if (!tooClose) buildings.push(half);
+        }
+      }
+    }
+    
+    return buildings;
   }
 
   shrinkPolygon(poly, amount) {
@@ -2281,24 +2686,28 @@ class CityModel {
     
     let voronoi = Voronoi.build(points);
     
-    const relaxIndices = [0, 1, 2, this.nPatches];
-    
-    for (let i = 0; i < 3; i++) {
-      const toRelax = Array.from(new Set(relaxIndices
-        .map(index => voronoi.points[index])
-        .filter(point => point != null)
-      ));
-
+    // Apply Lloyd's relaxation to all interior points (excluding frame boundary points)
+    for (let i = 0; i < VORONOI_RELAXATION_ITERATIONS; i++) {
+      const toRelax = voronoi.points.filter(p => !voronoi.frame.includes(p));
       voronoi = Voronoi.relax(voronoi, toRelax);
+    }
+    
+    // Apply Urquhart graph filtering if enabled (removes longest edge from each triangle)
+    if (APPLY_URQUHART_GRAPH) {
+      voronoi.applyUrquhartGraph();
     }
     
     voronoi.points.sort((p1, p2) => MathUtils.sign(p1.length - p2.length));
     
     const regions = voronoi.partitioning();
     
-    // Create patches from regions
+    // Create patches from regions and apply Chaikin smoothing to cell shapes
     for (const r of regions) {
       const patch = Patch.fromRegion(r);
+      // Apply Chaikin smoothing to make Voronoi cells more organic
+      if (patch.shape && patch.shape.length >= 3 && CHAIKIN_SMOOTHING_ITERATIONS > 0) {
+        patch.shape = Polygon.chaikin(patch.shape, true, CHAIKIN_SMOOTHING_ITERATIONS);
+      }
       this.patches.push(patch);
     }
     
@@ -2628,7 +3037,7 @@ class CityModel {
       
       if (waterPoly.length >= 3) {
         // Heavily smooth coastline to remove ALL sharp Voronoi corners (3-5 passes for very organic look)
-        const smoothPasses = 3 + Random.int(0, 3);
+        const smoothPasses = POLYGON_SMOOTHING_PASSES + Random.int(0, 3);
         const smoothedCoast = Polygon.smooth(waterPoly, null, smoothPasses);
         this.waterBodies.push(smoothedCoast);
         this.waterBodyTypes.push('coast');
@@ -2761,7 +3170,7 @@ class CityModel {
         }
       }
       
-      this.borderShape = Polygon.smooth(this.borderShape, excludePoints, 3);
+      this.borderShape = Polygon.smooth(this.borderShape, excludePoints, POLYGON_SMOOTHING_PASSES);
       // Post-smooth validation
       this.borderShape = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
       // Keep gates valid too
@@ -2919,7 +3328,7 @@ class CityModel {
     if (!this.waterBodies) this.waterBodies = [];
     if (!this.waterBodyTypes) this.waterBodyTypes = [];
     // Heavily smooth for very organic look without ANY sharp corners (5-7 passes for rivers, 2 for canals)
-    const smoothPasses = this.riverType === 'canal' ? 2 : (5 + Random.int(0, 3));
+    const smoothPasses = this.riverType === 'canal' ? 2 : (POLYGON_SMOOTHING_PASSES + 2 + Random.int(0, 3));
     const result = Polygon.smooth(waterPoly, null, smoothPasses);
     
     // Key metric: river/canal polygon built
@@ -4516,22 +4925,323 @@ class CityModel {
       }
     }
 
-    // Optional shantytown outside the gates
-    if (StateManager.shantytown && this.gates && this.gates.length > 0) {
-      for (const gate of this.gates) {
-        // pick a nearby outer patch and mark as slum
-        let best = null, bestD = Infinity;
-        for (const patch of this.patches) {
-          if (patch.withinCity || patch.ward || patch.waterbody) continue;
-          const c = Polygon.centroid(patch.shape);
-          const d = Point.distance(c, gate);
-          if (d < bestD) { bestD = d; best = patch; }
-        }
-        if (best) best.ward = new Slum(this, best);
-      }
+    // Optional shantytown - organic clusters along roads with density falloff
+    if (StateManager.shantytown) {
+      this.generateShantytown();
     }
   }
   
+  generateShantytown() {
+    // Generate organic network like brick/stone pattern around streets/gates
+    // Radial spokes from gates with short arc segments connecting them (brick-like)
+    // NO alleys far from streets - only where connected to roads/gates
+    
+    if (!this.gates || this.gates.length === 0) return;
+    
+    const outsidePatches = this.patches.filter(p => 
+      !p.withinCity && !p.ward && !p.waterbody && p.shape && p.shape.length >= 3
+    );
+    
+    if (outsidePatches.length === 0) return;
+    
+    const shantyPaths = [];
+    const radialSpokes = []; // Store radial spokes for creating brick pattern
+    const alleyWidth = StateManager.alleyWidth || 1.8;
+    const maxRadius = this.cityRadius * 100;
+    const cityCenter = Polygon.centroid(this.borderShape || []);
+    
+    // Collect exterior roads that aren't alleys
+    const existingRoads = (this.exteriorRoads || []).filter(r => !r.isAlley);
+    
+    // Generate network nodes
+    const nodes = [];
+    
+    // STEP 1: Define arc rings - 40 rings extending to maxRadius
+    const arcRings = [];
+    const numRings = 40;
+    const totalSpan = maxRadius - this.cityRadius * 5;
+    const ringSpacing = totalSpan / numRings;
+    
+    for (let ring = 0; ring < numRings; ring++) {
+      const arcRadius = this.cityRadius + ring * ringSpacing  * 0.1;
+      arcRings.push({ radius: arcRadius, segments: [] });
+    }
+    
+    // STEP 2: Create radials that ONLY exist near streets and travel FAR down the roads
+    const allRadials = [];
+    
+    for (const road of existingRoads) {
+      if (road.length < 3) continue;
+      
+      const midIdx = Math.floor(road.length / 2);
+      const roadAngle = Math.atan2(road[midIdx].y - cityCenter.y, road[midIdx].x - cityCenter.x);
+      const roadPos = road[midIdx];
+      
+      // 5-8 radials PER STREET, evenly spaced
+      const numRadials = 5 + Random.int(0, 4);
+      
+      // Calculate even spacing - same as ring spacing
+      const ringSpacing = arcRings.length > 1 ? arcRings[1].radius - arcRings[0].radius : maxRadius * 0.03;
+      const avgRadius = (this.cityRadius + maxRadius) / 2;
+      const radialAngularSpacing = ringSpacing / avgRadius;
+      
+      for (let r = 0; r < numRadials; r++) {
+        // EVENLY SPACED radials
+        const angleOffset = (r - (numRadials - 1) / 2) * radialAngularSpacing;
+        let currentAngle = roadAngle + angleOffset;
+        
+        const radialSegments = [];
+        let currentSegment = [];
+        let currentRadius = this.cityRadius * .8;
+        
+        // ALL radials from this street go FAR - to 95% of maxRadius
+        const radialMaxRadius = maxRadius * 10;
+        
+        while (currentRadius < radialMaxRadius) {
+          const normalizedDist = (currentRadius - this.cityRadius) / (maxRadius - this.cityRadius);
+          
+          // Current position
+          const x = cityCenter.x + Math.cos(currentAngle) * currentRadius;
+          const y = cityCenter.y + Math.sin(currentAngle) * currentRadius;
+          const currentPos = new Point(x, y);
+          
+          // Distance from this street for arc fade
+          const distFromStreet = Point.distance(currentPos, roadPos);
+          const normalizedStreetDist = distFromStreet / maxRadius;
+          
+          // Arcs fade RADIALLY from streets - much faster falloff
+          const arcFadeProb = Math.pow(1 - normalizedStreetDist, 2.5);
+          
+          // Check if we're crossing an arc ring
+          let nearRing = null;
+          for (const ring of arcRings) {
+            if (Math.abs(currentRadius - ring.radius) < alleyWidth * 3.5) {
+              nearRing = ring;
+              break;
+            }
+          }
+          
+          // ALWAYS make left/right decision at intersections
+          if (nearRing) {
+            // Check if arc is still active at this distance from street
+            if (Random.float() < arcFadeProb) {
+              // WRAP AROUND THE ARC
+              // Save current radial segment
+              if (currentSegment.length >= 2) {
+                radialSegments.push([...currentSegment]);
+              }
+              currentSegment = [];
+              
+              // Choose direction (left or right around circle)
+              const wrapDirection = Random.float() < 0.5 ? 1 : -1;
+              const wrapAngle = (0.15 + Random.float() * 0.25) * Math.PI; // 15-40 degrees
+              const startAngle = currentAngle;
+              const endAngle = currentAngle + wrapDirection * wrapAngle;
+              
+              // Travel along arc
+              const arcSegment = [];
+              const numArcSteps = 5 + Random.int(0, 4);
+              for (let a = 0; a <= numArcSteps; a++) {
+                const t = a / numArcSteps;
+                const angle = startAngle + (endAngle - startAngle) * t;
+                
+                const arcX = cityCenter.x + Math.cos(angle) * nearRing.radius;
+                const arcY = cityCenter.y + Math.sin(angle) * nearRing.radius;
+                
+                const variation = alleyWidth * 0.3;
+                const pt = new Point(
+                  arcX + (Random.float() - 0.5) * variation,
+                  arcY + (Random.float() - 0.5) * variation
+                );
+                
+                arcSegment.push(pt);
+              }
+              
+              if (arcSegment.length >= 2) {
+                nearRing.segments.push(arcSegment);
+                radialSegments.push(arcSegment);
+              }
+              
+              // 25% chance to terminate after wrapping
+              if (Random.float() < 0.25) {
+                break;
+              }
+              
+              // Update angle and continue outward
+              currentAngle = endAngle;
+              currentRadius = nearRing.radius + alleyWidth * (3 + Random.float() * 3);
+            } else {
+              // Arc faded out - just skip past it
+              currentRadius += alleyWidth * (3 + Random.float() * 2);
+            }
+          } else {
+            // Continue straight outward
+            const variation = alleyWidth * 0.3;
+            const pt = new Point(
+              x + (Random.float() - 0.5) * variation,
+              y + (Random.float() - 0.5) * variation
+            );
+            
+            currentSegment.push(pt);
+            currentRadius += alleyWidth * (4 + Random.float() * 3);
+          }
+        }
+        
+        // Save final segment
+        if (currentSegment.length >= 2) {
+          radialSegments.push(currentSegment);
+        }
+        
+        // Add all segments from this radial
+        shantyPaths.push(...radialSegments);
+      }
+    }
+
+    
+    // Place shanties along the alleyway network
+    for (const patch of outsidePatches) {
+      const c = Polygon.centroid(patch.shape);
+      
+      // Find nearest distance to any alley path
+      let minPathDist = Infinity;
+      let nearestPathPoint = null;
+      
+      for (const path of shantyPaths) {
+        for (let i = 0; i < path.length - 1; i++) {
+          const dist = this.pointToSegmentDistance(c, path[i], path[i + 1]);
+          if (dist < minPathDist) {
+            minPathDist = dist;
+            // Find closest point on this segment
+            const segLen = Point.distance(path[i], path[i + 1]);
+            const t = Math.max(0, Math.min(1, 
+              ((c.x - path[i].x) * (path[i + 1].x - path[i].x) + 
+               (c.y - path[i].y) * (path[i + 1].y - path[i].y)) / (segLen * segLen)
+            ));
+            nearestPathPoint = new Point(
+              path[i].x + t * (path[i + 1].x - path[i].x),
+              path[i].y + t * (path[i + 1].y - path[i].y)
+            );
+          }
+        }
+      }
+      
+      // Find distance from city center for fade
+      const distFromCity = Point.distance(c, cityCenter);
+      const normalizedCityDist = (distFromCity - this.cityRadius) / (maxRadius - this.cityRadius);
+      
+      // Place shanty based on hierarchy: streets > alleys near streets > alleys far from streets
+      // Find nearest street (non-alley road)
+      let minStreetDist = Infinity;
+      for (const road of existingRoads) {
+        for (let i = 0; i < road.length - 1; i++) {
+          const dist = this.pointToSegmentDistance(c, road[i], road[i + 1]);
+          if (dist < minStreetDist) minStreetDist = dist;
+        }
+      }
+      
+      const streetThreshold = alleyWidth * 12;
+      const alleyThreshold = alleyWidth * 6;
+      
+      let probability = 0;
+      
+      // Priority 1: Near streets (very high priority)
+      if (minStreetDist < streetThreshold) {
+        const streetProximity = 1 - (minStreetDist / streetThreshold);
+        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.5);
+        probability = Math.pow(streetProximity, 0.4) * cityFade * 0.7;
+      }
+      // Priority 2: Near alleys that are close to streets (medium priority)
+      else if (minPathDist < alleyThreshold && nearestPathPoint) {
+        const alleyProximity = 1 - (minPathDist / alleyThreshold);
+        
+        // How close is this alley to streets?
+        let alleyToStreetDist = Infinity;
+        for (const road of existingRoads) {
+          for (let i = 0; i < road.length - 1; i++) {
+            const dist = this.pointToSegmentDistance(nearestPathPoint, road[i], road[i + 1]);
+            if (dist < alleyToStreetDist) alleyToStreetDist = dist;
+          }
+        }
+        
+        const alleyStreetProximity = 1 - Math.min(1, alleyToStreetDist / (maxRadius * 0.3));
+        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.7);
+        probability = Math.pow(alleyProximity, 0.5) * alleyStreetProximity * cityFade * 0.45;
+      }
+      // Priority 3: Near alleys far from streets (low priority)
+      else if (minPathDist < alleyThreshold) {
+        const alleyProximity = 1 - (minPathDist / alleyThreshold);
+        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.9);
+        probability = Math.pow(alleyProximity, 0.7) * cityFade * 0.25;
+      }
+      
+      // Sparse placement - skip most patches
+      if (Random.float() < probability * 0.4) {
+        patch.ward = new Slum(this, patch);
+      }
+    }
+    
+    // Store paths for rendering
+    if (!this.exteriorRoads) this.exteriorRoads = [];
+    for (const path of shantyPaths) {
+      path.isAlley = true;
+      this.exteriorRoads.push(path);
+    }
+  }
+  
+  getOutwardDirection(gate) {
+    // Find direction perpendicular to wall at gate
+    if (!this.borderShape || this.borderShape.length < 3) return { x: 1, y: 0 };
+    
+    // Find closest wall segment to gate
+    let closestDist = Infinity;
+    let closestSegment = null;
+    
+    for (let i = 0; i < this.borderShape.length; i++) {
+      const a = this.borderShape[i];
+      const b = this.borderShape[(i + 1) % this.borderShape.length];
+      const dist = this.pointToSegmentDistance(gate, a, b);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestSegment = { a, b };
+      }
+    }
+    
+    if (!closestSegment) return { x: 1, y: 0 };
+    
+    // Get perpendicular pointing outward
+    const wallDir = {
+      x: closestSegment.b.x - closestSegment.a.x,
+      y: closestSegment.b.y - closestSegment.a.y
+    };
+    const len = Math.sqrt(wallDir.x * wallDir.x + wallDir.y * wallDir.y);
+    wallDir.x /= len;
+    wallDir.y /= len;
+    
+    // Perpendicular directions
+    const perp1 = { x: -wallDir.y, y: wallDir.x };
+    const perp2 = { x: wallDir.y, y: -wallDir.x };
+    
+    // Choose perpendicular that points away from city center
+    const dot1 = perp1.x * gate.x + perp1.y * gate.y;
+    const dot2 = perp2.x * gate.x + perp2.y * gate.y;
+    
+    return dot1 > dot2 ? perp1 : perp2;
+  }
+  
+  pointToSegmentDistance(point, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Point.distance(point, a);
+    
+    let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    
+    const projX = a.x + t * dx;
+    const projY = a.y + t * dy;
+    return Math.sqrt((point.x - projX) ** 2 + (point.y - projY) ** 2);
+  }
+
   calculateCompactness(shape) {
     // Compactness = 4π * area / perimeter²
     // Perfect circle = 1, less compact shapes < 1
@@ -4713,63 +5423,185 @@ class CityModel {
       return rows;
     };
 
-    // For each outside patch, gather overlapping road segments and create buildings
+    // Check if shantytown mode is enabled and has alleys
+    const hasShantytownAlleys = this.exteriorRoads && this.exteriorRoads.some(r => r.isAlley);
+    const alleyWidth = StateManager.alleyWidth || 1.8;
+    
+    // For each outside patch, create buildings using lots-mode tessellation + hierarchical placement
     for (const patch of outsidePatches) {
-      // Skip farms: we don't build settlements over farm fields
-      if (patch.ward instanceof Farm) continue;
+      // Skip farms and slums: we don't build residential settlements over them
+      if (patch.ward instanceof Farm || patch.ward instanceof Slum) continue;
+      
       let ward = patch.ward;
       if (!ward) { ward = new Ward(this, patch, 'residential'); patch.ward = ward; }
-      const buildings = ward.geometry || [];
-      for (const road of this.exteriorRoads) {
-        // Precompute total length for tapering from gate outward
-        let totalLen = 0; const segLens = [];
-        for (let i=0;i<road.length-1;i++){ const a=road[i], b=road[i+1]; const L=Math.hypot(b.x-a.x,b.y-a.y); segLens.push(L); totalLen+=L; }
-        let acc = 0;
-        for (let i=0;i<road.length-1;i++){
-          const a = road[i], b = road[i+1];
-          const L = segLens[i] || Math.hypot(b.x-a.x,b.y-a.y);
-          // Taper depth: strong near city, fades outward; none after 60% of the road
-          const t0 = acc/Math.max(1e-6,totalLen);
-          const t1 = (acc+L)/Math.max(1e-6,totalLen);
-          const tMid = (t0+t1)/2;
-          // Depth scale: 1 at start, 0 at >=0.6
-          const depthScale = Math.max(0, 1 - tMid/0.6);
-          acc += L;
-          // Quick reject by midpoint if far
-          const mid = new Point((a.x+b.x)/2, (a.y+b.y)/2);
-          const inOrNear = pointInPoly(mid, patch.shape);
-          if (!inOrNear) {
-            // Still might cross: check any endpoint inside
-            if (!pointInPoly(a, patch.shape) && !pointInPoly(b, patch.shape)) {
-              // As last resort, if segment intersects polygon, we'll clip accordingly below
+      
+      // If shantytown alleys exist, use hierarchical placement with lots-mode tessellation
+      if (hasShantytownAlleys) {
+        // Get all streets (non-alley roads) and alleys
+        const streets = this.exteriorRoads.filter(r => !r.isAlley);
+        const alleys = this.exteriorRoads.filter(r => r.isAlley);
+        
+        // Generate buildings using lots-mode tessellation via temporary Slum helper
+        // (Slum class has the shrinkPolygon and createAlleys methods we need)
+        const tempSlum = new Slum(this, patch);
+        const shrunkShape = tempSlum.shrinkPolygon(patch.shape, 2);
+        const allBuildings = tempSlum.createAlleys(shrunkShape, 10, 0.12, 0.3, Random.chance(0.3));
+        const buildings = [];
+        
+        // Filter buildings using hierarchical street/alley proximity
+        for (const building of allBuildings) {
+          const bCenter = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+          bCenter.x /= building.length;
+          bCenter.y /= building.length;
+          
+          // Check collision with alleys
+          let tooCloseToAlley = false;
+          let minAlleyDist = Infinity;
+          for (const alley of alleys) {
+            for (let j = 0; j < alley.length - 1; j++) {
+              const dist = this.pointToSegmentDistance(bCenter, alley[j], alley[j + 1]);
+              if (dist < minAlleyDist) minAlleyDist = dist;
+              if (dist < alleyWidth * 1.2) {
+                tooCloseToAlley = true;
+                break;
+              }
+            }
+            if (tooCloseToAlley) break;
+          }
+          
+          // Check collision with streets
+          let tooCloseToStreet = false;
+          let minStreetDist = Infinity;
+          for (const street of streets) {
+            for (let j = 0; j < street.length - 1; j++) {
+              const dist = this.pointToSegmentDistance(bCenter, street[j], street[j + 1]);
+              if (dist < minStreetDist) minStreetDist = dist;
+              if (dist < alleyWidth * 2.0) {
+                tooCloseToStreet = true;
+                break;
+              }
+            }
+            if (tooCloseToStreet) break;
+          }
+          
+          // Check water collision
+          let inWater = false;
+          if (Array.isArray(this.waterBodies)) {
+            for (const water of this.waterBodies) {
+              if (water && water.length >= 3 && pointInPoly(bCenter, water)) {
+                inWater = true;
+                break;
+              }
             }
           }
-          const insideSegs = segmentClipToPoly(a,b,patch.shape);
-          for (const seg of insideSegs){
-            const [p0,p1] = seg;
-            if (depthScale <= 0.05) continue; // too far from gate
-            const rows = makeStripBuildings(p0,p1, depthScale);
-            buildings.push(...rows);
+          
+          if (tooCloseToAlley || tooCloseToStreet || inWater) continue;
+          
+          // Apply hierarchical street proximity filtering
+          // Priority 1: Near streets (primary)
+          // Priority 2: Near alleys close to streets (secondary) 
+          // Priority 3: Near alleys far from streets (tertiary)
+          
+          const streetThreshold = alleyWidth * 15;
+          const alleyThreshold = alleyWidth * 8;
+          let placementProbability = 0;
+          
+          // Priority 1: Building is near a street directly
+          if (minStreetDist < streetThreshold) {
+            const streetProximity = 1 - (minStreetDist / streetThreshold);
+            placementProbability = Math.pow(streetProximity, 0.3) * 0.8;
+          }
+          // Priority 2 & 3: Building is near an alley
+          else if (minAlleyDist < alleyThreshold) {
+            // Find closest street to the nearest alley point
+            let alleyToStreetDist = Infinity;
+            for (const alley of alleys) {
+              for (const pt of alley) {
+                const distFromBuilding = Math.hypot(pt.x - bCenter.x, pt.y - bCenter.y);
+                if (distFromBuilding < minAlleyDist + 5) { // Within relevant range
+                  for (const street of streets) {
+                    for (let j = 0; j < street.length - 1; j++) {
+                      const dist = this.pointToSegmentDistance(pt, street[j], street[j + 1]);
+                      if (dist < alleyToStreetDist) alleyToStreetDist = dist;
+                    }
+                  }
+                }
+              }
+            }
+            
+            if (alleyToStreetDist < alleyWidth * 20) {
+              // Priority 2: Alley is close to streets
+              const alleyStreetProximity = 1 - Math.min(1, alleyToStreetDist / (alleyWidth * 20));
+              const alleyProximity = 1 - (minAlleyDist / alleyThreshold);
+              placementProbability = Math.pow(alleyStreetProximity, 0.5) * alleyProximity * 0.5;
+            } else {
+              // Priority 3: Alley is far from streets
+              const alleyProximity = 1 - (minAlleyDist / alleyThreshold);
+              placementProbability = alleyProximity * 0.2;
+            }
+          }
+          
+          // Apply sparse placement multiplier
+          if (Random.float() < placementProbability * 0.4) {
+            buildings.push(building);
           }
         }
-      }
-      
-      // Filter out buildings that intersect water bodies
-      if (buildings.length > 0 && Array.isArray(this.waterBodies) && this.waterBodies.length > 0) {
-        ward.geometry = buildings.filter(building => {
-          if (!building || building.length < 3) return false;
-          const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-          center.x /= building.length;
-          center.y /= building.length;
-          
-          for (const water of this.waterBodies) {
-            if (!water || water.length < 3) continue;
-            if (pointInPoly(center, water)) return false;
-          }
-          return true;
-        });
-      } else {
+        
         ward.geometry = buildings;
+      } else {
+        // No shantytown alleys - use traditional strip buildings along roads
+        const buildings = ward.geometry || [];
+        for (const road of this.exteriorRoads) {
+          // Precompute total length for tapering from gate outward
+          let totalLen = 0; const segLens = [];
+          for (let i=0;i<road.length-1;i++){ const a=road[i], b=road[i+1]; const L=Math.hypot(b.x-a.x,b.y-a.y); segLens.push(L); totalLen+=L; }
+          let acc = 0;
+          for (let i=0;i<road.length-1;i++){
+            const a = road[i], b = road[i+1];
+            const L = segLens[i] || Math.hypot(b.x-a.x,b.y-a.y);
+            // Taper depth: strong near city, fades outward; none after 60% of the road
+            const t0 = acc/Math.max(1e-6,totalLen);
+            const t1 = (acc+L)/Math.max(1e-6,totalLen);
+            const tMid = (t0+t1)/2;
+            // Depth scale: 1 at start, 0 at >=0.6
+            const depthScale = Math.max(0, 1 - tMid/0.6);
+            acc += L;
+            // Quick reject by midpoint if far
+            const mid = new Point((a.x+b.x)/2, (a.y+b.y)/2);
+            const inOrNear = pointInPoly(mid, patch.shape);
+            if (!inOrNear) {
+              // Still might cross: check any endpoint inside
+              if (!pointInPoly(a, patch.shape) && !pointInPoly(b, patch.shape)) {
+                // As last resort, if segment intersects polygon, we'll clip accordingly below
+              }
+            }
+            const insideSegs = segmentClipToPoly(a,b,patch.shape);
+            for (const seg of insideSegs){
+              const [p0,p1] = seg;
+              if (depthScale <= 0.05) continue; // too far from gate
+              const rows = makeStripBuildings(p0,p1, depthScale);
+              buildings.push(...rows);
+            }
+          }
+        }
+        
+        // Filter out buildings that intersect water bodies
+        if (buildings.length > 0 && Array.isArray(this.waterBodies) && this.waterBodies.length > 0) {
+          ward.geometry = buildings.filter(building => {
+            if (!building || building.length < 3) return false;
+            const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+            center.x /= building.length;
+            center.y /= building.length;
+            
+            for (const water of this.waterBodies) {
+              if (!water || water.length < 3) continue;
+              if (pointInPoly(center, water)) return false;
+            }
+            return true;
+          });
+        } else {
+          ward.geometry = buildings;
+        }
       }
     }
   }
@@ -4781,7 +5613,7 @@ class CityModel {
 
 class Palette {
   static paper = '#F3EDE2';
-  static light = '#4A3D2C';
+  static light = '#C9B896';  // Definite tan/brown - no pink possible
   static dark = '#2B2416';
   static roof = '#8B7355'; // Brown roof colour
 }
@@ -4987,7 +5819,7 @@ class CityRenderer {
         ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
       }
       ctx.closePath();
-      ctx.fillStyle = '#F7F1E3'; // very light beige base for all inside cells
+      ctx.fillStyle = '#E8DCC8'; // light tan/beige base for all inside cells (no pink)
       ctx.fill();
     }
     
@@ -4998,31 +5830,113 @@ class CityRenderer {
   drawOutsideTerrain(ctx) {
     if (!this.model || !this.model.patches) return;
     const noiseScale = 0.05;
-    for (const patch of this.model.patches) {
-      // Draw terrain for outside cells AND castle patches
-      if (patch.withinCity && !(patch.ward instanceof Castle)) continue;
-      if (!patch.shape || patch.shape.length < 3) continue;
-
-      // Compute a representative noise/sample point (centroid)
-      let cx = 0, cy = 0; for (const p of patch.shape) { cx += p.x; cy += p.y; } cx /= patch.shape.length; cy /= patch.shape.length;
-      const n = (PerlinNoise.noise(cx * noiseScale, cy * noiseScale) + 1) * 0.5; // 0..1
-
-      // Blend between muted grass and dry earth
-      // Grass base: hsl(85,30%,80%)  Earth base: hsl(35,35%,82%) (soft tones)
-      const h = 85 * (1 - n) + 35 * n;
-      const s = 30 * (1 - n) + 35 * n;
-      const l = 80 * (1 - n) + 82 * n + (Random.float() - 0.5) * 2; // tiny jitter
-      const fill = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
-      for (let i = 1; i < patch.shape.length; i++) ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
-      ctx.closePath();
+    
+    // Get outside patches
+    const outsidePatches = this.model.patches.filter(p => 
+      (!p.withinCity || p.ward instanceof Castle) && p.shape && p.shape.length >= 3
+    );
+    
+    // Apply Urquhart graph to group adjacent patches by merging along removed edges
+    const patchGroups = this.groupPatchesByUrquhart(outsidePatches);
+    
+    // Draw each group with unified color
+    for (const group of patchGroups) {
+      // Compute centroid of entire group for color
+      let cx = 0, cy = 0, count = 0;
+      for (const patch of group) {
+        for (const p of patch.shape) {
+          cx += p.x;
+          cy += p.y;
+          count++;
+        }
+      }
+      if (count > 0) {
+        cx /= count;
+        cy /= count;
+      }
+      
+      const n = (PerlinNoise.noise(cx * noiseScale, cy * noiseScale) + 1) * 0.5;
+      
+      // RGB blend between light green and light tan
+      const r1 = 210, g1 = 220, b1 = 195;  // Light greenish
+      const r2 = 205, g2 = 205, b2 = 170; // Light tan
+      const r = Math.floor(r1 + (r2 - r1) * n);
+      const g = Math.floor(g1 + (g2 - g1) * n);
+      const b = Math.floor(b1 + (b2 - b1) * n);
+      const fill = `rgb(${r}, ${g}, ${b})`;
+      
+      // Draw all patches in group with same color
       ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.restore();
+      for (const patch of group) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
+        for (let i = 1; i < patch.shape.length; i++) {
+          ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
     }
+  }
+  
+  groupPatchesByUrquhart(patches) {
+    // Group patches, but limit group size to create moderate-sized fields
+    const groups = [];
+    const visited = new Set();
+    const maxGroupSize = 5;  // Limit to small field groups
+    
+    for (const startPatch of patches) {
+      if (visited.has(startPatch)) continue;
+      
+      const group = [];
+      const queue = [startPatch];
+      visited.add(startPatch);
+      
+      while (queue.length > 0 && group.length < maxGroupSize) {
+        const patch = queue.shift();
+        group.push(patch);
+        
+        // Find adjacent patches - only add if within group size limit
+        if (group.length >= maxGroupSize) break;
+        
+        for (const otherPatch of patches) {
+          if (visited.has(otherPatch)) continue;
+          if (group.length >= maxGroupSize) break;
+          
+          // Check if patches share an edge
+          if (this.patchesShareEdge(patch, otherPatch)) {
+            visited.add(otherPatch);
+            queue.push(otherPatch);
+          }
+        }
+      }
+      
+      groups.push(group);
+    }
+    
+    return groups;
+  }
+  
+  patchesShareEdge(p1, p2) {
+    // Check if two patches share a significant edge
+    for (let i = 0; i < p1.shape.length; i++) {
+      const a1 = p1.shape[i];
+      const b1 = p1.shape[(i + 1) % p1.shape.length];
+      
+      for (let j = 0; j < p2.shape.length; j++) {
+        const a2 = p2.shape[j];
+        const b2 = p2.shape[(j + 1) % p2.shape.length];
+        
+        // Check if edges overlap (same points in reverse order)
+        if ((Math.abs(a1.x - b2.x) < 0.1 && Math.abs(a1.y - b2.y) < 0.1 &&
+             Math.abs(b1.x - a2.x) < 0.1 && Math.abs(b1.y - a2.y) < 0.1)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   
   /**
@@ -5173,11 +6087,11 @@ class CityRenderer {
     } else if (patch === this.model.citadel) {
       return '#D5C8B8';
     } else if (patch.ward instanceof Farm) {
-      // Use stored farm colour (same as classic renderer)
+      // Use stored farm colour - beige/tan tones only
       if (!patch.ward.farmColor) {
-        const hue = 50 + Random.float() * 40; // Yellow-green to olive range
-        const sat = 20 + Random.float() * 15; // Low saturation
-        const light = 75 + Random.float() * 10; // Pale
+        const hue = 35 + Random.float() * 15; // Beige to light brown range (35-50°)
+        const sat = 22 + Random.float() * 10; // Low saturation for beige
+        const light = 78 + Random.float() * 8; // Light tones
         patch.ward.farmColor = `hsl(${hue}, ${sat}%, ${light}%)`;
       }
       return patch.ward.farmColor;
@@ -5649,11 +6563,11 @@ class CityRenderer {
       }
       const isEdgeInside = minDist0 < 8; // threshold in map units
       if (isEdgeInside) {
-        // Outside terrain colour using Perlin noise at centroid
+        // Outside terrain colour using Perlin noise at centroid (beige/tan tones)
         const n = (PerlinNoise.noise(cx0 * 0.05, cy0 * 0.05) + 1) * 0.5;
-        const h = 85 * (1 - n) + 35 * n;
-        const s = 30 * (1 - n) + 35 * n;
-        const l = 80 * (1 - n) + 82 * n;
+        const h = 85 * (1 - n) + 40 * n;  // Green to beige/tan (no pink)
+        const s = 30 * (1 - n) + 28 * n;  // Lower saturation
+        const l = 80 * (1 - n) + 83 * n;
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
@@ -5702,14 +6616,14 @@ class CityRenderer {
       ctx.fillStyle = '#D4C5A0'; // More distinct tan/sand colour for central plaza
       ctx.fill();
     } else if (patch === this.model.citadel) {
-      ctx.fillStyle = '#D5C8B8';  // Slightly different grey for citadel
+      ctx.fillStyle = '#C8BCA8';  // Tan/grey for citadel (no pink)
       ctx.fill();
     } else if (patch.ward instanceof Farm) {
-      // Different pale brown-green for each farm
+      // Different pale beige/tan for each farm
       if (!patch.ward.farmColor) {
-        const hue = 50 + Random.float() * 40; // Yellow-green to olive range
-        const sat = 20 + Random.float() * 15; // Low saturation
-        const light = 75 + Random.float() * 10; // Pale
+        const hue = 35 + Random.float() * 15; // Beige to light brown range (35-50°)
+        const sat = 22 + Random.float() * 10; // Low saturation for beige
+        const light = 78 + Random.float() * 8; // Light tones
         patch.ward.farmColor = `hsl(${hue}, ${sat}%, ${light}%)`;
       }
       ctx.fillStyle = patch.ward.farmColor;
@@ -6014,11 +6928,19 @@ class CityRenderer {
       ctx.lineTo(road[i].x, road[i].y);
     }
     
-    // Thicker and more visible than interior streets
-    ctx.strokeStyle = Palette.dark + '60';
-    ctx.lineWidth = (StateManager.streetWidth * 1.5 || 3.0) / this.scale;
-    ctx.lineCap = 'round';
-    ctx.stroke();
+    // Alleys are much thinner than regular streets (30% width - 70% fainter)
+    if (road.isAlley) {
+      ctx.strokeStyle = Palette.dark + '60';
+      ctx.lineWidth = (StateManager.streetWidth * 0.05 || 0.1) / this.scale;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    } else {
+      // Regular roads are thicker and more visible than interior streets
+      ctx.strokeStyle = Palette.dark + '60';
+      ctx.lineWidth = (StateManager.streetWidth * 1.5 || 3.0) / this.scale;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
   }
 
   drawBuildings(ctx, buildings, inside = true, wardType = null) {
@@ -7560,11 +8482,11 @@ class FarmPainter {
    */
   static paint(ctx, farm, scale = 1) {
     const strokeWidth = 0.5 / scale;
-    const greenColour = Palette.light;
+    const fieldColour = '#C9B896';  // Definite tan/brown for farm fields
     const darkColour = Palette.dark;
     
     // Draw field plots
-    ctx.fillStyle = greenColour;
+    ctx.fillStyle = fieldColour;
     ctx.strokeStyle = darkColour;
     ctx.lineWidth = strokeWidth;
     
@@ -7818,12 +8740,12 @@ class PatchView {
     // Fill the patch: override to terrain tones for outside cells
     let fillColour = patch.color || this.palette.light;
     if (!patch.withinCity) {
-      // Compute soft terrain tint based on centroid noise (match drawOutsideTerrain)
+      // Compute soft terrain tint based on centroid noise (beige/tan tones)
       let cx = 0, cy = 0; for (const p of shapeToRender) { cx += p.x; cy += p.y; } cx /= shapeToRender.length; cy /= shapeToRender.length;
       const n = (PerlinNoise.noise(cx * 0.05, cy * 0.05) + 1) * 0.5;
-      const h = 85 * (1 - n) + 35 * n;
-      const s = 30 * (1 - n) + 35 * n;
-      const l = 80 * (1 - n) + 82 * n;
+      const h = 40 * (1 - n) + 45 * n;  // Beige/tan hue range (40-45 degrees)
+      const s = 25 * (1 - n) + 30 * n;  // Lower saturation for beige
+      const l = 80 * (1 - n) + 85 * n;  // Light tones
       fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
     }
     ctx.fillStyle = fillColour;
