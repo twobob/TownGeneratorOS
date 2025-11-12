@@ -2260,6 +2260,8 @@ class CityModel {
     this.buildGeometry();
     // Add exterior, road-hugging settlements outside the walls
     this.buildOutsideSettlements();
+    // Generate named districts for region labels
+    this.generateDistricts();
   }
 
   buildPatches() {
@@ -2360,6 +2362,9 @@ class CityModel {
     
     // Extract water body polygons from waterbody cells for rendering
     this.extractWaterBodies();
+    
+    // Generate named districts after patches are assigned
+    this.generateDistricts();
 
     // DCEL will be built after patches are known and withinCity flags set
   }
@@ -4557,6 +4562,61 @@ class CityModel {
     }
   }
 
+  // Generate named districts by clustering adjacent wards
+  generateDistricts() {
+    this.districts = [];
+    if (!StateManager.showRegionNames) return;
+
+    const innerPatches = this.patches.filter(p => p.withinCity && !p.waterbody && p.ward);
+    if (innerPatches.length === 0) return;
+
+    const used = new Set();
+    const targetDistricts = Math.max(3, Math.floor(innerPatches.length / 4));
+
+    // Start districts from random seed patches
+    for (let i = 0; i < targetDistricts && used.size < innerPatches.length; i++) {
+      const available = innerPatches.filter(p => !used.has(p));
+      if (available.length === 0) break;
+
+      const seed = available[Random.int(0, available.length)];
+      const district = { patches: [seed], name: DistrictNameGenerator.generate() };
+      used.add(seed);
+
+      // Grow district by adding adjacent patches
+      const maxSize = Math.floor(innerPatches.length / targetDistricts) + Random.int(0, 3);
+      for (let j = 0; j < maxSize - 1; j++) {
+        const candidates = [];
+        for (const p of district.patches) {
+          for (const neighbor of this.patches) {
+            if (!used.has(neighbor) && neighbor.withinCity && !neighbor.waterbody && neighbor.ward) {
+              if (this.areAdjacent(p, neighbor)) {
+                candidates.push(neighbor);
+              }
+            }
+          }
+        }
+        if (candidates.length === 0) break;
+        const next = candidates[Random.int(0, candidates.length)];
+        district.patches.push(next);
+        used.add(next);
+      }
+
+      if (district.patches.length >= 2) {
+        this.districts.push(district);
+      }
+    }
+  }
+
+  areAdjacent(p1, p2) {
+    // Check if two patches share vertices
+    for (const v1 of p1.shape) {
+      for (const v2 of p2.shape) {
+        if (Math.hypot(v1.x - v2.x, v1.y - v2.y) < 0.5) return true;
+      }
+    }
+    return false;
+  }
+
   // Generate symmetric building strips along exterior roads within outside patches.
   // Buildings are clipped to outside patches and respect water at render time.
   buildOutsideSettlements() {
@@ -4737,6 +4797,8 @@ class CityRenderer {
     // 3D rendering support
     this.meshCache3D = null;  // Cached 3D meshes {buildings: [], walls: [], streets: []}
     this.camera3D = null;      // Renderer3D.Camera instance
+    // District label bounding boxes for collision avoidance (reset every render pass)
+    this.labelBBoxes = [];
   }
 
   render() {
@@ -4842,6 +4904,14 @@ class CityRenderer {
         } else if (patch.ward) {
           this.drawLabel(ctx, patch, patch.ward.getLabel());
         }
+      }
+    }
+    
+    // Draw district names with curved text (reset collision store each frame)
+    if (StateManager.showRegionNames && this.model.districts) {
+      this.labelBBoxes = [];
+      for (const district of this.model.districts) {
+        this.drawDistrictLabel(ctx, district);
       }
     }
     
@@ -5275,6 +5345,14 @@ class CityRenderer {
         } else if (patch === this.model.citadel && !patch.ward) {
           this.drawLabel(ctx, patch, 'Citadel');
         }
+      }
+    }
+    
+    // Draw district names with curved text (reset collision store each frame)
+    if (StateManager.showRegionNames && this.model.districts) {
+      this.labelBBoxes = [];
+      for (const district of this.model.districts) {
+        this.drawDistrictLabel(ctx, district);
       }
     }
     
@@ -6260,7 +6338,7 @@ class CityRenderer {
     cy /= patch.shape.length;
     
     ctx.save();
-    const fontSize = 12 / this.scale; // Bigger font
+    const fontSize = 10 / this.scale; // Bigger font
     ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -6274,6 +6352,243 @@ class CityRenderer {
     // Black text
     ctx.fillStyle = '#000000';
     ctx.fillText(labelText, cx, cy);
+    ctx.restore();
+  }
+
+  drawDistrictLabel(ctx, district) {
+    if (!district || !district.name || !district.patches || district.patches.length === 0) return;
+    
+    // Get the boundary of the district (union of all patches)
+    const allPoints = [];
+    for (const patch of district.patches) {
+      allPoints.push(...patch.shape);
+    }
+    
+    // Find the ridge/equator line through the district
+    const ridge = this.getDistrictRidge(allPoints);
+    if (!ridge || ridge.length < 2) return;
+    
+    // Draw curved text along the ridge
+    this.drawCurvedText(ctx, district.name, ridge);
+  }
+
+  getDistrictRidge(points) {
+    if (points.length === 0) return null;
+    // PCA-based ridge fitting for stable, gentle curvature
+    // 1. Compute centroid
+    let sumX = 0, sumY = 0;
+    for (const p of points) { sumX += p.x; sumY += p.y; }
+    const cx = sumX / points.length;
+    const cy = sumY / points.length;
+
+    // 2. Compute covariance components
+    let covXX = 0, covYY = 0, covXY = 0;
+    for (const p of points) {
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      covXX += dx * dx;
+      covYY += dy * dy;
+      covXY += dx * dy;
+    }
+    covXX /= points.length;
+    covYY /= points.length;
+    covXY /= points.length;
+
+    // 3. Eigen decomposition for 2x2 covariance
+    const trace = covXX + covYY;
+    const det = covXX * covYY - covXY * covXY;
+    const temp = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+    const lambda1 = (trace + temp) / 2; // largest eigenvalue
+    // const lambda2 = (trace - temp) / 2; // smaller (unused directly)
+
+    // Eigenvector for lambda1: (covXY, lambda1 - covXX) unless degenerate
+    let vx = covXY;
+    let vy = lambda1 - covXX;
+    if (Math.abs(vx) + Math.abs(vy) < 1e-6) { vx = 1; vy = 0; }
+    const len = Math.sqrt(vx * vx + vy * vy);
+    vx /= len; vy /= len;
+
+    // Secondary axis (perpendicular)
+    const wx = -vy;
+    const wy = vx;
+
+    // 4. Project points onto primary axis to get range
+    let minT = Infinity, maxT = -Infinity;
+    const projected = [];
+    for (const p of points) {
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const t = dx * vx + dy * vy; // primary coord
+      const u = dx * wx + dy * wy; // secondary coord
+      projected.push({ t, u });
+      if (t < minT) minT = t;
+      if (t > maxT) maxT = t;
+    }
+
+    const axisLength = maxT - minT;
+    if (axisLength < 1e-3) return null;
+
+    // 5. Sample along primary axis and compute average secondary displacement
+    const samples = 24;
+    const windowSize = axisLength * 0.15;
+    const ridge = [];
+    for (let i = 0; i <= samples; i++) {
+      const tNorm = i / samples;
+      const tVal = minT + axisLength * tNorm;
+      let sumU = 0, countU = 0;
+      for (const pr of projected) {
+        if (Math.abs(pr.t - tVal) <= windowSize) { sumU += pr.u; countU++; }
+      }
+      let avgU = countU > 0 ? (sumU / countU) : 0;
+      // Limit curvature amplitude for legibility
+      const maxCurve = axisLength * 0.08;
+      avgU = Math.max(-maxCurve, Math.min(maxCurve, avgU));
+      // Reconstruct point in world space
+      const x = cx + vx * tVal + wx * avgU;
+      const y = cy + vy * tVal + wy * avgU;
+      ridge.push(new Point(x, y));
+    }
+
+    // 6. Smooth ridge (simple moving average)
+    const smooth = [];
+    const smoothRadius = 2;
+    for (let i = 0; i < ridge.length; i++) {
+      let sx = 0, sy = 0, sc = 0;
+      for (let k = -smoothRadius; k <= smoothRadius; k++) {
+        const idx = i + k;
+        if (idx >= 0 && idx < ridge.length) { sx += ridge[idx].x; sy += ridge[idx].y; sc++; }
+      }
+      smooth.push(new Point(sx / sc, sy / sc));
+    }
+
+    return smooth;
+  }
+
+  drawCurvedText(ctx, text, ridge) {
+    if (!text || ridge.length < 2) return;
+    
+    ctx.save();
+    // Adaptive font sizing based on ridge extents
+    let minX = Infinity, maxX = -Infinity;
+    for (const p of ridge) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }
+    const ridgeWidth = maxX - minX;
+    const fontSize = Math.max(20, Math.min(40, ridgeWidth * 0.12)) / this.scale;
+    ctx.font = `bold ${fontSize}px serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Work on a local path we can reverse for upright text
+    let path = ridge.slice();
+
+    // Helper: compute path length
+    const getPathLength = (p) => {
+      let L = 0;
+      for (let i = 0; i < p.length - 1; i++) {
+        const dx = p[i + 1].x - p[i].x;
+        const dy = p[i + 1].y - p[i].y;
+        L += Math.sqrt(dx * dx + dy * dy);
+      }
+      return L;
+    };
+
+    // Helper to get point at distance along current path
+    const getPointAtOn = (p, dist) => {
+      let remaining = dist;
+      for (let i = 0; i < p.length - 1; i++) {
+        const dx = p[i + 1].x - p[i].x;
+        const dy = p[i + 1].y - p[i].y;
+        const segLen = Math.sqrt(dx * dx + dy * dy);
+        if (remaining <= segLen) {
+          const t = Math.max(0, Math.min(1, remaining / segLen));
+          return { x: p[i].x + dx * t, y: p[i].y + dy * t, angle: Math.atan2(dy, dx) };
+        }
+        remaining -= segLen;
+      }
+      const last = p[p.length - 1];
+      const prev = p[p.length - 2];
+      return { x: last.x, y: last.y, angle: Math.atan2(last.y - prev.y, last.x - prev.x) };
+    };
+
+    // Determine if text would be upside down at the center; if so, flip path
+    const totalLengthForCheck = getPathLength(path);
+    const midPosCheck = getPointAtOn(path, totalLengthForCheck / 2);
+    const ang = midPosCheck.angle;
+    // Canvas y axis is down; treat angles with cos < 0 (pointing left) as upside-down text
+    if (Math.cos(ang) < 0) {
+      path.reverse();
+    }
+
+    // Compute final path length after possible reversal
+    const pathLength = getPathLength(path);
+
+    // Helper bound to current path
+    const getPointAt = (dist) => getPointAtOn(path, dist);
+
+    // Measure per-character widths
+    const charWidths = [];
+    let totalCharWidth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const w = ctx.measureText(text[i]).width;
+      charWidths.push(w);
+      totalCharWidth += w;
+    }
+    const letterSpacing = fontSize * 0.1; // small spacing
+    const totalWidth = totalCharWidth + letterSpacing * Math.max(0, text.length - 1);
+
+    // If path is too short, center
+    if (pathLength < totalWidth * 0.75) {
+      const midIdx = Math.floor(path.length / 2);
+      const mid = path[midIdx];
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 5 / this.scale;
+      ctx.strokeText(text, mid.x, mid.y);
+      ctx.fillStyle = '#8B4513';
+      ctx.fillText(text, mid.x, mid.y);
+      ctx.restore();
+      return;
+    }
+
+    // First pass: compute placements and AABBs; check collisions against existing labels only
+    const startOffset = (pathLength - totalWidth) / 2;
+    let d = startOffset;
+    const placements = [];
+    const currentBBoxes = [];
+    for (let i = 0; i < text.length; i++) {
+      const pos = getPointAt(d + charWidths[i] / 2);
+      placements.push(pos);
+      const halfW = Math.max(charWidths[i] / 2, fontSize * 0.3);
+      const halfH = fontSize * 0.6;
+      const bbox = { x: pos.x - halfW, y: pos.y - halfH, w: halfW * 2, h: halfH * 2 };
+      currentBBoxes.push(bbox);
+      d += charWidths[i] + letterSpacing;
+    }
+
+    const overlaps = (a, b) => !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+    if (this.labelBBoxes && this.labelBBoxes.length > 0) {
+      for (const b of currentBBoxes) {
+        for (const g of this.labelBBoxes) {
+          if (overlaps(b, g)) { ctx.restore(); return; }
+        }
+      }
+    }
+
+    // Second pass: draw all characters, then register bboxes
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const pos = placements[i];
+      ctx.save();
+      ctx.translate(pos.x, pos.y);
+      ctx.rotate(pos.angle);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 3.5 / this.scale;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(char, 0, 0);
+      ctx.fillStyle = '#5A3312';
+      ctx.fillText(char, 0, 0);
+      ctx.restore();
+    }
+
+    if (this.labelBBoxes) this.labelBBoxes.push(...currentBBoxes);
     ctx.restore();
   }
 
@@ -8165,6 +8480,13 @@ class FlythroughCamera {
         }
       }
     }
+
+    // Draw district names with curved text
+    if (StateManager.showRegionNames && this.model.districts) {
+      for (const district of this.model.districts) {
+        this.renderer.drawDistrictLabel(ctx, district);
+      }
+    }
     
     // Draw trees if enabled
     if (StateManager.showTrees) {
@@ -8177,6 +8499,39 @@ class FlythroughCamera {
     }
     
     ctx.restore();
+  }
+}
+
+// ============================================================================
+// District Name Generator
+// ============================================================================
+
+class DistrictNameGenerator {
+  static prefixes = ['North', 'South', 'East', 'West', 'Old', 'New', 'High', 'Low', 'Upper', 'Lower', 'Little', 'Great'];
+  static types = ['Quarter', 'Ward', 'District', 'Town', 'End', 'Side', 'Gate', 'Cross', 'Market', 'Square'];
+  static suffixes = ['Borough', 'Village', 'Heights', 'Fields', 'Green', 'Vale', 'Hill', 'Bridge', 'Crossing'];
+  static adjectives = ['Royal', 'Common', 'Merchant', 'Craft', 'Temple', 'Mill', 'Garden', 'River', 'Stone', 'Iron'];
+  
+  static pick(arr) {
+    return arr[Random.int(0, arr.length)];
+  }
+  
+  static generate() {
+    const roll = Random.float();
+    
+    if (roll < 0.3) {
+      // Prefix + Type ("North Quarter")
+      return this.pick(this.prefixes) + ' ' + this.pick(this.types);
+    } else if (roll < 0.6) {
+      // Adjective + Type ("Merchant Ward")
+      return this.pick(this.adjectives) + ' ' + this.pick(this.types);
+    } else if (roll < 0.8) {
+      // Prefix + Adjective + Type ("Old Craft Quarter")
+      return this.pick(this.prefixes) + ' ' + this.pick(this.adjectives) + ' ' + this.pick(this.types);
+    } else {
+      // Adjective + Suffix ("Royal Borough")
+      return this.pick(this.adjectives) + ' ' + this.pick(this.suffixes);
+    }
   }
 }
 
@@ -8224,6 +8579,7 @@ class StateManager {
   static camera3DNear = 0.1; // 3D camera near clipping plane
   static camera3DFar = 4000; // 3D camera far clipping plane
   static buildingCount = 1000; // Number of buildings to render (1-1000)
+  static showRegionNames = true; // Display region/district names over grouped wards
 
   static pullParams() {
     const params = new URLSearchParams(window.location.search);
@@ -8280,6 +8636,7 @@ class StateManager {
     if (params.has('greens')) StateManager.showTrees = bool(params.get('greens'));
     if (params.has('shantytown')) StateManager.shantytown = bool(params.get('shantytown'));
     if (params.has('lots')) StateManager.lotsMode = bool(params.get('lots'));
+    if (params.has('regions')) StateManager.showRegionNames = bool(params.get('regions'));
     const display = params.get('display');
     if (display && display.toLowerCase() === 'lots') StateManager.lotsMode = true;
   }
@@ -8306,6 +8663,7 @@ class StateManager {
     url.searchParams.set('greens', StateManager.showTrees ? 1 : 0);
     url.searchParams.set('shantytown', StateManager.shantytown ? 1 : 0);
     url.searchParams.set('lots', StateManager.lotsMode ? 1 : 0);
+    url.searchParams.set('regions', StateManager.showRegionNames ? 1 : 0);
     
     window.history.replaceState(
       { size: StateManager.size, seed: StateManager.seed },

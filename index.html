@@ -193,6 +193,7 @@
           '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
           '<label><input type="checkbox" id="walls-check" checked> Walls</label>' +
           '<label><input type="checkbox" id="labels-check"> Show Labels</label>' +
+          '<label><input type="checkbox" id="region-names-check" checked> Region Names</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
           '<label><input type="checkbox" id="show-water-check"> Show Water</label>' +
@@ -393,6 +394,11 @@
           generator.render();
         });
         
+        document.getElementById('region-names-check').addEventListener('change', function() {
+          StateManager.showRegionNames = this.checked;
+          generator.render();
+        });
+        
         
         document.getElementById('buildings-check').addEventListener('change', function() {
           StateManager.showBuildings = this.checked;
@@ -456,6 +462,7 @@
         syncCheckbox('citadel-check', StateManager.citadelNeeded);
         syncCheckbox('walls-check', StateManager.wallsNeeded);
         syncCheckbox('labels-check', StateManager.showLabels);
+        syncCheckbox('region-names-check', StateManager.showRegionNames);
         syncCheckbox('buildings-check', StateManager.showBuildings);
         syncCheckbox('streets-check', StateManager.showStreets);
         syncCheckbox('show-water-check', StateManager.showWater);
