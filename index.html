@@ -92,7 +92,7 @@
     }
     .controls label {
       display: block;
-      margin-bottom: 8px;
+      margin-bottom: 2px;
       font-size: 0.85rem;
       color: #4a3d2c;
     }
@@ -118,7 +118,7 @@
     }
     .controls input[type="range"] {
       width: 100%;
-      margin: 5px 0;
+      margin: 2px 0;
     }
     .controls button {
       background: #4a3d2c;
@@ -187,20 +187,25 @@
           '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
           '<label>Size: <span id="size-value">' + StateManager.size + '</span><br>' +
           '<input type="range" id="size-slider" min="6" max="40" value="' + StateManager.size + '"></label>' +
-          '<label>Seed: <input type="number" id="seed-input" style="width: 120px; padding: 4px;" value="' + (StateManager.seed > 0 ? StateManager.seed : '') + '"></label>' +
+          '<div class="seed-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;margin-bottom:6px;">' +
+            '<label style="margin:0;">Seed:<br><input type="number" id="seed-input" style="width: 120px; padding: 4px;" value="' + (StateManager.seed > 0 ? StateManager.seed : '') + '"></label>' +
+            '<label style="margin:0;align-self:center;white-space:nowrap;"><input type="checkbox" id="view-architecture-check"> Use View Architecture</label>' +
+          '</div>' +
           '<div class="checkbox-grid">' +
           '<label><input type="checkbox" id="plaza-check" checked> Plaza</label>' +
-          '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
+          '<label><input type="checkbox" id="region-names-check" checked> Region Names</label>' +
           '<label><input type="checkbox" id="walls-check" checked> Walls</label>' +
           '<label><input type="checkbox" id="labels-check"> Show Labels</label>' +
-          '<label><input type="checkbox" id="region-names-check" checked> Region Names</label>' +
+          '<label><input type="checkbox" id="shantytown-check" checked> Shantytown</label>' +
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
-          '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
-          '<label><input type="checkbox" id="show-water-check"> Show Water</label>' +
-          '<label><input type="checkbox" id="view-architecture-check"> Use View Architecture</label>' +
+          '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
+          '<label><input type="checkbox" id="show-water-check" checked> Show Water</label>' +
           '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
           '<label style="display:none;"><input type="checkbox" id="view-3d-check"> 3D View</label>' +
-          '<label><input type="checkbox" id="show-trees-check"> Show Trees</label>' +
+          '<label><input type="checkbox" id="urban-castle-check" checked> Urban Castle</label>' +
+          '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
+          '<label><input type="checkbox" id="lots-check" checked> Lots Mode</label>' +
+          '<label><input type="checkbox" id="show-trees-check" checked> Show Trees</label>' +
           '</div>' +
           '<div class="slider-grid">' +
           '<label>Grid Chaos: <span id="grid-chaos-value">0.4</span><br>' +
@@ -209,16 +214,16 @@
           '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.6"></label>' +
           '<label>Cell Size Chaos: <span id="cell-chaos-value">0.0</span><br>' +
           '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="0.0"></label>' +
-          '<label>Alley Width: <span id="alley-width-value">0.6</span><br>' +
-          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="0.6"></label>' +
-          '<label>Street Width: <span id="street-width-value">4.0</span><br>' +
-          '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="4.0"></label>' +
-          '<label>Building Gap: <span id="building-gap-value">1.8</span><br>' +
-          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="1.8"></label>' +
-          '<label>Wall Thickness: <span id="wall-thickness-value">5</span><br>' +
-          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="5"></label>' +
-          '<label>Piazza Chance: <span id="plaza-chance-value">30%</span><br>' +
-          '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.3"></label>' +
+          '<label>Alley Width: <span id="alley-width-value">2.2</span><br>' +
+          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="2.2"></label>' +
+          '<label>Street Width: <span id="street-width-value">3.5</span><br>' +
+          '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="3.5"></label>' +
+          '<label>Building Gap: <span id="building-gap-value">2</span><br>' +
+          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="2"></label>' +
+          '<label>Wall Thickness: <span id="wall-thickness-value">2.5</span><br>' +
+          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="2.5"></label>' +
+          '<label>Piazza Chance: <span id="plaza-chance-value">10%</span><br>' +
+          '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.1"></label>' +
           '</div>' +
           '<div id="camera-3d-controls" style="display:none;">' +
           '<h4>3D Camera</h4>' +
@@ -353,7 +358,7 @@
         
         wallThickness.addEventListener('change', function() {
           StateManager.wallThickness = parseFloat(wallThickness.value);
-          generator.render();
+          generator.generate();
         });
         
         zoomSlider.addEventListener('change', function() {
@@ -414,6 +419,30 @@
           StateManager.useViewArchitecture = this.checked;
           generator.render();
         });
+
+        const shantyEl = document.getElementById('shantytown-check');
+        if (shantyEl) {
+          shantyEl.addEventListener('change', function() {
+            StateManager.shantytown = this.checked;
+            generator.generate();
+          });
+        }
+
+        const lotsEl = document.getElementById('lots-check');
+        if (lotsEl) {
+          lotsEl.addEventListener('change', function() {
+            StateManager.lotsMode = this.checked;
+            generator.generate();
+          });
+        }
+
+        const urbanCastleEl = document.getElementById('urban-castle-check');
+        if (urbanCastleEl) {
+          urbanCastleEl.addEventListener('change', function() {
+            StateManager.urbanCastle = this.checked;
+            generator.generate();
+          });
+        }
         
         document.getElementById('flythrough-check').addEventListener('change', function() {
           generator.toggleFlythrough();
@@ -467,6 +496,9 @@
         syncCheckbox('streets-check', StateManager.showStreets);
         syncCheckbox('show-water-check', StateManager.showWater);
         syncCheckbox('show-trees-check', StateManager.showTrees);
+        syncCheckbox('shantytown-check', StateManager.shantytown);
+        syncCheckbox('lots-check', StateManager.lotsMode);
+        syncCheckbox('urban-castle-check', StateManager.urbanCastle);
         syncCheckbox('river-check', StateManager.river === 1);
         syncCheckbox('canal-check', StateManager.canal === 1);
         syncCheckbox('coast-check', StateManager.coast === 1);

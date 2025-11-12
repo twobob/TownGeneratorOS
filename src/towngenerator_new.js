@@ -1118,8 +1118,8 @@ class Ward {
     // Recursively subdivide ward into building plots (like original Haxe)
     const lots = StateManager.lotsMode === true;
     const minSq = lots ? 12 : 20;
-    const gridChaos = lots ? 0.1 : (this.model.gridChaos || 0.2);
-    const sizeChaos = lots ? 0.15 : (this.model.sizeChaos || 0.3);
+    const gridChaos = this.model.gridChaos !== undefined ? this.model.gridChaos : 0.4;
+    const sizeChaos = this.model.sizeChaos !== undefined ? this.model.sizeChaos : 0.6;
     
     // Random chance to create an open piazza instead of buildings
     if (!lots && Random.chance(StateManager.plazaChance)) {
@@ -1554,15 +1554,15 @@ class Ward {
 
   getLabel() {
     const labels = {
-      'craftsmen': 'Craftsmen Ward',
-      'merchant': 'Merchant Ward',
+      'craftsmen': 'Craftsmen',
+      'merchant': 'Merchant',
       'slum': 'Slums',
-      'patriciate': 'Patriciate Ward',
+      'patriciate': 'Patriciate',
       'administration': 'Administration',
-      'military': 'Military Ward',
+      'military': 'Military',
       'park': 'Park'
     };
-    return labels[this.wardType] || 'Ward';
+    return labels[this.wardType] || '';
   }
 }
 
@@ -1591,8 +1591,9 @@ class Castle extends Ward {
     const innerWall = this.shrinkPolygon(this.shape, 3);
     this.citadelWall = innerWall;
     
-    // Add corner towers
-    const towerSize = 3;
+    // Add corner towers - size scales with wallThickness
+    const wallThickness = (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5;
+    const towerSize = wallThickness * 0.6;
     const towers = [];
     for (let i = 0; i < innerWall.length; i++) {
       const v = innerWall[i];
@@ -4857,6 +4858,14 @@ class CityRenderer {
         buildingGap: StateManager.buildingGap,
         wallThickness: StateManager.wallThickness
       };
+    } else {
+      // Update settings on existing FormalMap and propagate to child views
+      this.formalMap.settings.wallThickness = StateManager.wallThickness;
+      this.formalMap.settings.streetWidth = StateManager.streetWidth;
+      this.formalMap.settings.buildingGap = StateManager.buildingGap;
+      if (this.formalMap.walls) {
+        this.formalMap.walls.settings = this.formalMap.settings;
+      }
     }
     
     // Draw using view architecture
@@ -4864,11 +4873,11 @@ class CityRenderer {
       showBuildings: StateManager.showBuildings,
       showFarms: StateManager.showBuildings,
       showRoads: StateManager.showStreets,
-      showWalls: true,
+      showWalls: StateManager.wallsNeeded,
       showMajorRoads: StateManager.showStreets,
       showMinorRoads: StateManager.showStreets,
-      showTowers: true,
-      showGates: true,
+      showTowers: StateManager.wallsNeeded,
+      showGates: StateManager.wallsNeeded,
       showFocus: StateManager.showFocus || false,
       showCellOutlines: StateManager.showCellOutlines
     });
@@ -4881,6 +4890,16 @@ class CityRenderer {
     // Draw bridges on top of water/roads
     if (this.model.bridges && this.model.bridges.length > 0) {
       this.drawBridges(ctx, this.model.bridges);
+    }
+    
+    // Draw piers
+    if (this.model.piers && this.model.piers.length > 0) {
+      this.drawPiers(ctx, this.model.piers);
+    }
+    
+    // Draw waterfront features (docks, poles, boats)
+    if (this.model.waterfrontBuildings && this.model.waterfrontBuildings.length > 0) {
+      this.drawWaterfrontFeatures(ctx, this.model.waterfrontBuildings);
     }
     
     // Draw trees if enabled (before labels so labels appear on top)
@@ -5073,8 +5092,6 @@ class CityRenderer {
         gates: this.model.gates.map(gate => ({
           x: gate.x,
           y: gate.y,
-          width: 8,
-          height: 12,
           angle: Math.atan2(gate.y, gate.x)
         }))
       });
@@ -5088,8 +5105,6 @@ class CityRenderer {
           castleGates.push({
             x: patch.ward.citadelGate.x,
             y: patch.ward.citadelGate.y,
-            width: 8,
-            height: 12,
             angle: 0
           });
         }
@@ -5118,22 +5133,11 @@ class CityRenderer {
   
   settingsChanged() {
     if (!this.lastSettings) return true;
-    const changed = (
+    return (
       this.lastSettings.streetWidth !== StateManager.streetWidth ||
       this.lastSettings.buildingGap !== StateManager.buildingGap ||
       this.lastSettings.wallThickness !== StateManager.wallThickness
     );
-    if (changed) {
-      console.log('[View Arch] Settings changed:', {
-        old: this.lastSettings,
-        new: {
-          streetWidth: StateManager.streetWidth,
-          buildingGap: StateManager.buildingGap,
-          wallThickness: StateManager.wallThickness
-        }
-      });
-    }
-    return changed;
   }
   
   generateWallTowers(wallPath) {
@@ -5152,7 +5156,6 @@ class CityRenderer {
         towers.push({
           x: p1.x + (p2.x - p1.x) * t,
           y: p1.y + (p2.y - p1.y) * t,
-          radius: 4,
           type: Random.chance(0.7) ? 'round' : 'square'
         });
         segmentDist += spacing;
@@ -5274,10 +5277,12 @@ class CityRenderer {
       }
     }
     
-    // Draw citadel walls AFTER castle floor
-    for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle) {
-        this.drawCitadelWall(ctx, patch.ward);
+    // Draw citadel walls AFTER castle floor (only if walls enabled)
+    if (StateManager.wallsNeeded) {
+      for (const patch of this.model.patches) {
+        if (patch.ward instanceof Castle) {
+          this.drawCitadelWall(ctx, patch.ward);
+        }
       }
     }
     
@@ -5324,14 +5329,16 @@ class CityRenderer {
       }
     }
     
-    // Draw castle towers (gatehouses) AFTER EVERYTHING - on top with NO clipping
-    for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle && patch.ward.towers) {
-        const wardColourTint = this.getWardColourTint(patch.ward);
+    // Draw castle towers (gatehouses) AFTER EVERYTHING - on top with NO clipping (only if walls enabled)
+    if (StateManager.wallsNeeded) {
+      for (const patch of this.model.patches) {
+        if (patch.ward instanceof Castle && patch.ward.towers) {
+          const wardColourTint = this.getWardColourTint(patch.ward);
         // Direct draw without any clipping
         ctx.save();
         BuildingPainter.paint(ctx, patch.ward.towers, Palette.roof, Palette.dark, 0.5, this.scale, wardColourTint);
         ctx.restore();
+        }
       }
     }
     
@@ -6099,10 +6106,27 @@ class CityRenderer {
 
   drawGate(ctx, gate) {
     const safeScale = Math.max(1e-3, this.scale || 1);
-    ctx.beginPath();
-    ctx.arc(gate.x, gate.y, Math.min(10, 2 / safeScale), 0, Math.PI * 2);
-    ctx.fillStyle = Palette.light;
-    ctx.fill();
+    const wallThickness = (StateManager.wallThickness || 5) / safeScale;
+    const gateWidth = wallThickness * 1.6;
+    const gateHeight = wallThickness * 2.4;
+    
+    ctx.save();
+    ctx.translate(gate.x, gate.y);
+    
+    // Rotate gate to align with wall
+    const angle = Math.atan2(gate.y, gate.x);
+    ctx.rotate(angle);
+    
+    // Draw gate opening as rectangle
+    ctx.fillStyle = Palette.paper;
+    ctx.fillRect(-gateWidth / 2, -gateHeight / 2, gateWidth, gateHeight);
+    
+    // Gate outline
+    ctx.strokeStyle = Palette.dark;
+    ctx.lineWidth = Math.max(0.5, wallThickness * 0.15);
+    ctx.strokeRect(-gateWidth / 2, -gateHeight / 2, gateWidth, gateHeight);
+    
+    ctx.restore();
   }
   
   drawBridges(ctx, bridges) {
@@ -7999,7 +8023,6 @@ class WallsView {
     this.palette = palette;
     this.settings = settings || { wallThickness: 5 };
     this.towerSpacing = 30; // Distance between towers
-    this.towerRadius = 4;
   }
   
   draw(ctx, options = {}) {
@@ -8052,7 +8075,12 @@ class WallsView {
       ctx.restore();
     }
     
-    // Draw citadel walls
+    // Draw citadel walls (reset stroke properties after restore)
+    ctx.strokeStyle = this.palette.dark;
+    ctx.lineWidth = this.settings.wallThickness || 5;
+    ctx.lineCap = 'square';
+    ctx.lineJoin = 'miter';
+    
     for (const wall of citadelWalls) {
       this.drawWallSegment(ctx, wall);
     }
@@ -8122,7 +8150,9 @@ class WallsView {
   }
   
   drawTower(ctx, tower) {
-    const radius = tower.radius || this.towerRadius;
+    // Compute tower radius dynamically from wall thickness
+    const wallThickness = this.settings.wallThickness || 5;
+    const radius = tower.radius || (wallThickness * 0.8);
     
     if (tower.type === 'square') {
       ctx.fillRect(
@@ -8140,8 +8170,10 @@ class WallsView {
   }
   
   drawGate(ctx, gate) {
-    const width = gate.width || 8;
-    const height = gate.height || 12;
+    // Scale gate size with wall thickness
+    const wallThickness = this.settings.wallThickness || 5;
+    const width = gate.width || (wallThickness * 1.6);
+    const height = gate.height || (wallThickness * 2.4);
     
     ctx.save();
     ctx.translate(gate.x, gate.y);
@@ -8508,7 +8540,7 @@ class FlythroughCamera {
 
 class DistrictNameGenerator {
   static prefixes = ['North', 'South', 'East', 'West', 'Old', 'New', 'High', 'Low', 'Upper', 'Lower', 'Little', 'Great'];
-  static types = ['Quarter', 'Ward', 'District', 'Town', 'End', 'Side', 'Gate', 'Cross', 'Market', 'Square'];
+  static types = ['Quarter', 'District', 'Town', 'End', 'Side', 'Gate', 'Cross', 'Market', 'Square'];
   static suffixes = ['Borough', 'Village', 'Heights', 'Fields', 'Green', 'Vale', 'Hill', 'Bridge', 'Crossing'];
   static adjectives = ['Royal', 'Common', 'Merchant', 'Craft', 'Temple', 'Mill', 'Garden', 'River', 'Stone', 'Iron'];
   
@@ -8544,32 +8576,33 @@ class StateManager {
   static seed = -1;
   static plazaNeeded = true;
   static citadelNeeded = true;
-  static urbanCastle = false; // Castle inside the city walls
+  static urbanCastle = true; // Castle inside the city walls (default enabled per user prefs)
   static wallsNeeded = true;
   static gatesNeeded = true;
   static gridChaos = 0.4;
   static sizeChaos = 0.6;
   static cellChaos = 0.0;
-  static alleyWidth = 0.6;
-  static streetWidth = 4.0;
-  static buildingGap = 1.8;
+  static alleyWidth = 2.2; // default tightened spacing per chosen settings
+  static streetWidth = 3.5;
+  static buildingGap = 2.0;
   static showLabels = false;
-  static wallThickness = 5;
+  static wallThickness = 2.5;
   static showCellOutlines = false;
   static showBuildings = true;
   static showStreets = true;
-  static showWater = false; // Show water bodies (coast/river)
+  static showWater = true; // Show water bodies (coast/river) - default enabled
   static coast = 0;         // 1 to force coast, 0 to disable
   static river = 0;         // 1 to enable river (independent)
   static canal = 0;         // 1 to enable canal (independent)
   static riverType = 'none'; // back-compat: 'none' | 'river' | 'canal' | 'both'
   static riverMeander = 0.5; // 0-1: micro-meander noise intensity (0=pure sine, 1=max chaos)
-  static lotsMode = false;  // Pack parcels like Lots display mode
+  static lotsMode = true;  // Lots Mode default enabled per user prefs
   static zoom = 1.0;
   static plazaChance = 0.3; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
   static flythroughActive = false; // Flythrough camera mode
-  static showTrees = false; // Render trees in parks (greens)
+  static showTrees = true; // Trees default enabled per user prefs
+  static shantytown = true; // Shantytown default enabled per user prefs
   static cameraOffsetX = 0; // Camera pan X offset
   static cameraOffsetY = 0; // Camera pan Y offset
   static view3D = false;     // Toggle between 2D and 3D rendering
