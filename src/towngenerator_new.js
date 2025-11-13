@@ -3148,6 +3148,7 @@ class CityModel {
       this.inner = this.patches.filter(p => p.withinCity);
     }
     
+    
     // Generate gates
     if (this.wallsNeeded && this.borderShape.length > 0) {
       const numGates = 2 + Random.int(0, 3);
@@ -4916,10 +4917,21 @@ class CityModel {
     }
     
     // Assign farms to outer patches with good compactness
+    // Less likely near city (where slums would form), more likely farther away
     for (const patch of this.patches) {
       if (!patch.withinCity && !patch.ward && !patch.waterbody) {
         const compactness = this.calculateCompactness(patch.shape);
-        if (Random.chance(0.35) && compactness >= 0.6) {
+        
+        // Calculate distance from city center
+        const patchCenter = Polygon.centroid(patch.shape);
+        const distFromCenter = Math.sqrt(patchCenter.x * patchCenter.x + patchCenter.y * patchCenter.y);
+        const distFromCityEdge = Math.max(0, distFromCenter - this.cityRadius);
+        
+        // Farms less likely near city (where slums form), more likely far away
+        // Near city: 0% chance, Far from city: 45% chance
+        const baseFarmChance = 0 + Math.min(0.25, distFromCityEdge / (this.cityRadius * 2));
+        
+        if (Random.chance(baseFarmChance) && compactness >= 0.6) {
           patch.ward = new Farm(this, patch);
         }
       }
@@ -4936,13 +4948,19 @@ class CityModel {
     // Radial spokes from gates with short arc segments connecting them (brick-like)
     // NO alleys far from streets - only where connected to roads/gates
     
-    if (!this.gates || this.gates.length === 0) return;
-    
     const outsidePatches = this.patches.filter(p => 
       !p.withinCity && !p.ward && !p.waterbody && p.shape && p.shape.length >= 3
     );
     
     if (outsidePatches.length === 0) return;
+    
+    // Use gates if available, otherwise use border points
+    const startPoints = (this.gates && this.gates.length > 0) ? this.gates : 
+                        (this.borderShape && this.borderShape.length > 0) ? 
+                        [this.borderShape[0], this.borderShape[Math.floor(this.borderShape.length / 3)], 
+                         this.borderShape[Math.floor(2 * this.borderShape.length / 3)]] : [];
+    
+    if (startPoints.length === 0) return;
     
     const shantyPaths = [];
     const radialSpokes = []; // Store radial spokes for creating brick pattern
@@ -5142,13 +5160,17 @@ class CityModel {
       const streetThreshold = alleyWidth * 12;
       const alleyThreshold = alleyWidth * 6;
       
+      // INVERSE SQUARE ROOT BOOST: Buildings near city+streets get massive density increase
+      // distFromCity is in world units from city edge
+      const cityDistBoost = 1.0 / Math.sqrt(Math.max(1, distFromCity - this.cityRadius));
+      
       let probability = 0;
       
       // Priority 1: Near streets (very high priority)
       if (minStreetDist < streetThreshold) {
         const streetProximity = 1 - (minStreetDist / streetThreshold);
         const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.5);
-        probability = Math.pow(streetProximity, 0.4) * cityFade * 0.7;
+        probability = Math.pow(streetProximity, 0.4) * cityFade * 0.7 * cityDistBoost;
       }
       // Priority 2: Near alleys that are close to streets (medium priority)
       else if (minPathDist < alleyThreshold && nearestPathPoint) {
@@ -5165,17 +5187,17 @@ class CityModel {
         
         const alleyStreetProximity = 1 - Math.min(1, alleyToStreetDist / (maxRadius * 0.3));
         const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.7);
-        probability = Math.pow(alleyProximity, 0.5) * alleyStreetProximity * cityFade * 0.45;
+        probability = Math.pow(alleyProximity, 0.5) * alleyStreetProximity * cityFade * 0.45 * cityDistBoost;
       }
       // Priority 3: Near alleys far from streets (low priority)
       else if (minPathDist < alleyThreshold) {
         const alleyProximity = 1 - (minPathDist / alleyThreshold);
         const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.9);
-        probability = Math.pow(alleyProximity, 0.7) * cityFade * 0.25;
+        probability = Math.pow(alleyProximity, 0.7) * cityFade * 0.25 * cityDistBoost;
       }
       
-      // Sparse placement - skip most patches
-      if (Random.float() < probability * 0.4) {
+      // 300% BASE INCREASE for slum wards + 200% overall density boost
+      if (Random.float() < probability * 1.2 * 14.0) {
         patch.ward = new Slum(this, patch);
       }
     }
@@ -5429,11 +5451,14 @@ class CityModel {
     
     // For each outside patch, create buildings using lots-mode tessellation + hierarchical placement
     for (const patch of outsidePatches) {
-      // Skip farms and slums: we don't build residential settlements over them
-      if (patch.ward instanceof Farm || patch.ward instanceof Slum) continue;
+      // Skip farms only - allow residential buildings to coexist with slums
+      if (patch.ward instanceof Farm) continue;
       
       let ward = patch.ward;
       if (!ward) { ward = new Ward(this, patch, 'residential'); patch.ward = ward; }
+      
+      // If patch has a Slum ward, add residential buildings to the slum's geometry
+      const isSlum = patch.ward instanceof Slum;
       
       // If shantytown alleys exist, use hierarchical placement with lots-mode tessellation
       if (hasShantytownAlleys) {
@@ -5502,6 +5527,12 @@ class CityModel {
           // Priority 2: Near alleys close to streets (secondary) 
           // Priority 3: Near alleys far from streets (tertiary)
           
+          // INVERSE SQUARE ROOT BOOST: Buildings near city get massive density increase
+          const cityCenter = Polygon.centroid(this.borderShape || patch.shape);
+          const distFromCityCenter = Math.hypot(bCenter.x - cityCenter.x, bCenter.y - cityCenter.y);
+          const distFromCityEdge = Math.max(1, distFromCityCenter - this.cityRadius);
+          const cityDistBoost = 1.0 / Math.sqrt(distFromCityEdge);
+          
           const streetThreshold = alleyWidth * 15;
           const alleyThreshold = alleyWidth * 8;
           let placementProbability = 0;
@@ -5509,7 +5540,7 @@ class CityModel {
           // Priority 1: Building is near a street directly
           if (minStreetDist < streetThreshold) {
             const streetProximity = 1 - (minStreetDist / streetThreshold);
-            placementProbability = Math.pow(streetProximity, 0.3) * 0.8;
+            placementProbability = Math.pow(streetProximity, 0.3) * 0.8 * cityDistBoost;
           }
           // Priority 2 & 3: Building is near an alley
           else if (minAlleyDist < alleyThreshold) {
@@ -5533,16 +5564,16 @@ class CityModel {
               // Priority 2: Alley is close to streets
               const alleyStreetProximity = 1 - Math.min(1, alleyToStreetDist / (alleyWidth * 20));
               const alleyProximity = 1 - (minAlleyDist / alleyThreshold);
-              placementProbability = Math.pow(alleyStreetProximity, 0.5) * alleyProximity * 0.5;
+              placementProbability = Math.pow(alleyStreetProximity, 0.5) * alleyProximity * 0.5 * cityDistBoost;
             } else {
               // Priority 3: Alley is far from streets
               const alleyProximity = 1 - (minAlleyDist / alleyThreshold);
-              placementProbability = alleyProximity * 0.2;
+              placementProbability = alleyProximity * 0.2 * cityDistBoost;
             }
           }
           
-          // Apply sparse placement multiplier
-          if (Random.float() < placementProbability * 0.4) {
+          // Apply sparse placement multiplier + 200% overall density boost
+          if (Random.float() < placementProbability * 1.2) {
             buildings.push(building);
           }
         }
@@ -7481,15 +7512,91 @@ class CityRenderer {
     const letterSpacing = fontSize * 0.1; // small spacing
     const totalWidth = totalCharWidth + letterSpacing * Math.max(0, text.length - 1);
 
-    // If path is too short, center
+    // If path is too short, use straight text with collision avoidance
     if (pathLength < totalWidth * 0.75) {
       const midIdx = Math.floor(path.length / 2);
-      const mid = path[midIdx];
+      let mid = path[midIdx];
+      
+      // Create bbox for straight text
+      const textWidth = ctx.measureText(text).width;
+      const padding = fontSize * 0.25;
+      const halfW = textWidth / 2 + padding;
+      const halfH = fontSize * 0.6 + padding;
+      
+      // Try multiple positions to avoid collisions
+      const positions = [
+        { x: mid.x, y: mid.y, offset: 0 },
+        { x: mid.x, y: mid.y + fontSize * 1.5, offset: fontSize * 1.5 },
+        { x: mid.x, y: mid.y - fontSize * 1.5, offset: -fontSize * 1.5 },
+        { x: mid.x + fontSize, y: mid.y, offset: 0 },
+        { x: mid.x - fontSize, y: mid.y, offset: 0 }
+      ];
+      
+      const overlaps = (a, b) => !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+      let foundPosition = null;
+      
+      for (const pos of positions) {
+        const bbox = { x: pos.x - halfW, y: pos.y - halfH, w: halfW * 2, h: halfH * 2 };
+        let hasCollision = false;
+        
+        if (this.labelBBoxes && this.labelBBoxes.length > 0) {
+          for (const g of this.labelBBoxes) {
+            if (overlaps(bbox, g)) {
+              hasCollision = true;
+              break;
+            }
+          }
+        }
+        
+        if (!hasCollision) {
+          foundPosition = { pos, bbox };
+          break;
+        }
+      }
+      
+      // If no position found without collision, try scaling down
+      if (!foundPosition) {
+        const scaledFontSize = fontSize * 0.7;
+        ctx.font = `bold ${scaledFontSize}px serif`;
+        const scaledTextWidth = ctx.measureText(text).width;
+        const scaledPadding = scaledFontSize * 0.25;
+        const scaledHalfW = scaledTextWidth / 2 + scaledPadding;
+        const scaledHalfH = scaledFontSize * 0.6 + scaledPadding;
+        
+        for (const pos of positions) {
+          const bbox = { x: pos.x - scaledHalfW, y: pos.y - scaledHalfH, w: scaledHalfW * 2, h: scaledHalfH * 2 };
+          let hasCollision = false;
+          
+          if (this.labelBBoxes && this.labelBBoxes.length > 0) {
+            for (const g of this.labelBBoxes) {
+              if (overlaps(bbox, g)) {
+                hasCollision = true;
+                break;
+              }
+            }
+          }
+          
+          if (!hasCollision) {
+            foundPosition = { pos, bbox };
+            break;
+          }
+        }
+      }
+      
+      // If still no position, skip this label
+      if (!foundPosition) {
+        ctx.restore();
+        return;
+      }
+      
+      // Draw the label at the found position
       ctx.strokeStyle = '#FFFFFF';
       ctx.lineWidth = 5 / this.scale;
-      ctx.strokeText(text, mid.x, mid.y);
+      ctx.strokeText(text, foundPosition.pos.x, foundPosition.pos.y);
       ctx.fillStyle = '#8B4513';
-      ctx.fillText(text, mid.x, mid.y);
+      ctx.fillText(text, foundPosition.pos.x, foundPosition.pos.y);
+      
+      if (this.labelBBoxes) this.labelBBoxes.push(foundPosition.bbox);
       ctx.restore();
       return;
     }
@@ -7499,11 +7606,12 @@ class CityRenderer {
     let d = startOffset;
     const placements = [];
     const currentBBoxes = [];
+    const padding = fontSize * 0.25; // Add padding to prevent visual overlap
     for (let i = 0; i < text.length; i++) {
       const pos = getPointAt(d + charWidths[i] / 2);
       placements.push(pos);
-      const halfW = Math.max(charWidths[i] / 2, fontSize * 0.3);
-      const halfH = fontSize * 0.6;
+      const halfW = Math.max(charWidths[i] / 2, fontSize * 0.3) + padding;
+      const halfH = fontSize * 0.6 + padding;
       const bbox = { x: pos.x - halfW, y: pos.y - halfH, w: halfW * 2, h: halfH * 2 };
       currentBBoxes.push(bbox);
       d += charWidths[i] + letterSpacing;

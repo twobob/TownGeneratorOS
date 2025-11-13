@@ -358,7 +358,7 @@
         
         wallThickness.addEventListener('change', function() {
           StateManager.wallThickness = parseFloat(wallThickness.value);
-          generator.generate();
+          generator.render();  // Only re-render, don't regenerate the whole city
         });
         
         zoomSlider.addEventListener('change', function() {
@@ -401,7 +401,7 @@
         
         document.getElementById('region-names-check').addEventListener('change', function() {
           StateManager.showRegionNames = this.checked;
-          generator.render();
+          generator.generate();
         });
         
         
