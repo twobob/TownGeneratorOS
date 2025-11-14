@@ -368,7 +368,6 @@ class Voronoi {
   buildRegion(p) {
     const r = new Region(p);
     
-    // Collect triangles that include this point (like original Haxe)
     for (const tr of this.triangles) {
       if (tr.p1 === p || tr.p2 === p || tr.p3 === p) {
         r.vertices.push(tr);
@@ -1166,9 +1165,21 @@ class Ward {
     // Store the inset shape for rendering ward backgrounds
     this.availableShape = availableShape;
     
+    // Check lots mode early
+    // Check lots mode early - handle string values and mix mode
+    let lots;
+    if (StateManager.lotsMode === 'mix') {
+      lots = Random.chance(0.5); // 50% chance for lots vs normal in mix mode
+    } else if (StateManager.lotsMode === 'lots' || StateManager.lotsMode === true) {
+      lots = true;
+    } else {
+      lots = false;
+    }
     // If this patch borders roads, create a thin ring of buildings hugging the road first
+    // SKIP in lots mode to avoid double-stacking buildings at perimeters
+    // SKIP inside the city (withinCity=true) to avoid houses along roads in normal mode
     let roadBuildings = [];
-    if (this.patch.face && this.patch.face.edge) {
+    if (!lots && !this.patch.withinCity && this.patch.face && this.patch.face.edge) {
       const loop = this.patch.face.loop();
       const streetWidth = (StateManager.streetWidth !== undefined) ? StateManager.streetWidth : 4.0;
       const buildingDepth = 6.0; // average building depth toward interior
@@ -1224,14 +1235,15 @@ class Ward {
       });
     }
 
-    // Recursively subdivide ward into building plots (like original Haxe)
-    const lots = StateManager.lotsMode === true;
-    const minSq = lots ? 12 : 20;
+
+    // Lots mode uses MUCH smaller minimum size for tight tessellation
+    // Normal mode uses larger buildings with more organic shapes
+    const minSq = lots ? 8 : 25;
     const gridChaos = this.model.gridChaos !== undefined ? this.model.gridChaos : 0.4;
     const sizeChaos = this.model.sizeChaos !== undefined ? this.model.sizeChaos : 0.6;
     
     // Random chance to create an open piazza instead of buildings
-    if (!lots && Random.chance(StateManager.plazaChance)) {
+    if (Random.chance(StateManager.plazaChance)) {
       // Create piazza with buildings around perimeter and empty centre
       this.geometry = this.createPiazza(availableShape);
     } else {
@@ -1556,7 +1568,16 @@ class Ward {
         // Small enough - make it a building (skip some for empty lots)
         const skipChance = StateManager.lotsMode ? 0.0 : 0.04;
         if (Random.float() > skipChance) {
-          buildings.push(half);
+          // Inset the building from its lot boundary to prevent overlaps
+          const inset = StateManager.lotsMode ? 0.8 : 0.3; // More inset in lots mode
+          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+          center.x /= half.length;
+          center.y /= half.length;
+          const insetBuilding = half.map(p => new Point(
+            center.x + (p.x - center.x) * (1 - inset / 10),
+            center.y + (p.y - center.y) * (1 - inset / 10)
+          ));
+          buildings.push(insetBuilding);
         }
       } else {
         // Keep subdividing
@@ -1564,7 +1585,16 @@ class Ward {
         if (shouldSplit) {
           buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, shouldSplit, depth + 1));
         } else {
-          buildings.push(half);
+          // Final building - apply inset
+          const inset = StateManager.lotsMode ? 0.8 : 0.3;
+          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+          center.x /= half.length;
+          center.y /= half.length;
+          const insetBuilding = half.map(p => new Point(
+            center.x + (p.x - center.x) * (1 - inset / 10),
+            center.y + (p.y - center.y) * (1 - inset / 10)
+          ));
+          buildings.push(insetBuilding);
         }
       }
     }
@@ -1573,19 +1603,19 @@ class Ward {
   }
 
   cutPolygon(poly, p1, p2, gap = 0) {
-    // Simple polygon cutting - returns two halves with optional gap
+
     const x1 = p1.x, y1 = p1.y;
     const dx1 = p2.x - x1, dy1 = p2.y - y1;
-    const len = Math.sqrt(dx1 * dx1 + dy1 * dy1);
     
-    // Perpendicular vector for gap
-    const perpX = -dy1 / len;
-    const perpY = dx1 / len;
+    const len = poly.length;
+    let edge1 = 0, ratio1 = 0.0;
+    let edge2 = 0, ratio2 = 0.0;
+    let count = 0;
     
-    const intersections = [];
-    for (let i = 0; i < poly.length; i++) {
+    // Find intersections with polygon edges
+    for (let i = 0; i < len; i++) {
       const v0 = poly[i];
-      const v1 = poly[(i + 1) % poly.length];
+      const v1 = poly[(i + 1) % len];
       
       const x2 = v0.x, y2 = v0.y;
       const dx2 = v1.x - x2, dy2 = v1.y - y2;
@@ -1596,37 +1626,125 @@ class Ward {
         const u = ((x2 - x1) * dy1 - (y2 - y1) * dx1) / denom;
         
         if (u >= 0 && u <= 1) {
-          const intPoint = new Point(x1 + dx1 * t, y1 + dy1 * t);
-          intersections.push({
-            point: intPoint,
-            point1: new Point(intPoint.x - perpX * gap / 2, intPoint.y - perpY * gap / 2),
-            point2: new Point(intPoint.x + perpX * gap / 2, intPoint.y + perpY * gap / 2),
-            index: i
-          });
+          if (count === 0) { edge1 = i; ratio1 = t; }
+          else if (count === 1) { edge2 = i; ratio2 = t; }
+          count++;
         }
       }
     }
     
-    if (intersections.length !== 2) return [poly];
+    if (count !== 2) return [poly];
     
-    const [int1, int2] = intersections;
+    // Calculate intersection points
+    const point1 = new Point(
+      p1.x + (p2.x - p1.x) * ratio1,
+      p1.y + (p2.y - p1.y) * ratio1
+    );
+    const point2 = new Point(
+      p1.x + (p2.x - p1.x) * ratio2,
+      p1.y + (p2.y - p1.y) * ratio2
+    );
+    
+    // Build half1: vertices from edge1+1 to edge2, with intersection points
     const half1 = [];
+    half1.push(point1);
+    for (let i = edge1 + 1; i <= edge2; i++) {
+      half1.push(poly[i]);
+    }
+    half1.push(point2);
+    
+    // Build half2: vertices from edge2+1 to end, then 0 to edge1, with intersection points
     const half2 = [];
-    
-    for (let i = 0; i <= int1.index; i++) {
-      half1.push(poly[i]);
-    }
-    half1.push(gap > 0 ? int1.point1 : int1.point);
-    half1.push(gap > 0 ? int2.point1 : int2.point);
-    for (let i = int2.index + 1; i < poly.length; i++) {
-      half1.push(poly[i]);
-    }
-    
-    half2.push(gap > 0 ? int1.point2 : int1.point);
-    for (let i = int1.index + 1; i <= int2.index; i++) {
+    half2.push(point2);
+    for (let i = edge2 + 1; i < len; i++) {
       half2.push(poly[i]);
     }
-    half2.push(gap > 0 ? int2.point2 : int2.point);
+    for (let i = 0; i <= edge1; i++) {
+      half2.push(poly[i]);
+    }
+    half2.push(point1);
+    
+    // Apply gap using peel if needed
+    if (gap > 0) {
+      return [
+        this.peelPolygon(half1, point2, gap / 2),
+        this.peelPolygon(half2, point1, gap / 2)
+      ].filter(h => h && h.length >= 3 && Math.abs(this.polygonArea(h)) > 0.01);
+    }
+    
+    return [half1, half2].filter(h => h.length >= 3 && Math.abs(this.polygonArea(h)) > 0.01);
+  }
+  
+  peelPolygon(poly, v1, d) {
+
+    const i1 = poly.findIndex(p => Math.abs(p.x - v1.x) < 0.001 && Math.abs(p.y - v1.y) < 0.001);
+    if (i1 === -1) return poly;
+    
+    const i2 = i1 === poly.length - 1 ? 0 : i1 + 1;
+    const v2 = poly[i2];
+    
+    // Vector along edge
+    const vx = v2.x - v1.x;
+    const vy = v2.y - v1.y;
+    
+    // Perpendicular (rotate 90deg counterclockwise: (x,y) -> (-y,x))
+    const len = Math.sqrt(vx * vx + vy * vy);
+    if (len < 0.001) return poly;
+    const nx = -vy / len * d;
+    const ny = vx / len * d;
+    
+    // Cut line parallel to edge, offset by perpendicular
+    const cutP1 = new Point(v1.x + nx, v1.y + ny);
+    const cutP2 = new Point(v2.x + nx, v2.y + ny);
+    
+    // Use basic cut with NO gap (0) and return first half
+    const halves = this.cutPolygonNoGap(poly, cutP1, cutP2);
+    return halves[0];
+  }
+  
+  cutPolygonNoGap(poly, p1, p2) {
+    // Version of cut without gap for use in peel
+    const x1 = p1.x, y1 = p1.y;
+    const dx1 = p2.x - x1, dy1 = p2.y - y1;
+    
+    const len = poly.length;
+    let edge1 = 0, ratio1 = 0.0;
+    let edge2 = 0, ratio2 = 0.0;
+    let count = 0;
+    
+    for (let i = 0; i < len; i++) {
+      const v0 = poly[i];
+      const v1 = poly[(i + 1) % len];
+      
+      const x2 = v0.x, y2 = v0.y;
+      const dx2 = v1.x - x2, dy2 = v1.y - y2;
+      
+      const denom = dx1 * dy2 - dy1 * dx2;
+      if (Math.abs(denom) > 0.001) {
+        const t = ((x2 - x1) * dy2 - (y2 - y1) * dx2) / denom;
+        const u = ((x2 - x1) * dy1 - (y2 - y1) * dx1) / denom;
+        
+        if (u >= 0 && u <= 1) {
+          if (count === 0) { edge1 = i; ratio1 = t; }
+          else if (count === 1) { edge2 = i; ratio2 = t; }
+          count++;
+        }
+      }
+    }
+    
+    if (count !== 2) return [poly];
+    
+    const point1 = new Point(p1.x + (p2.x - p1.x) * ratio1, p1.y + (p2.y - p1.y) * ratio1);
+    const point2 = new Point(p1.x + (p2.x - p1.x) * ratio2, p1.y + (p2.y - p1.y) * ratio2);
+    
+    const half1 = [point1];
+    for (let i = edge1 + 1; i <= edge2; i++) half1.push(poly[i]);
+    half1.push(point2);
+    
+    const half2 = [point2];
+    for (let i = edge2 + 1; i < len; i++) half2.push(poly[i]);
+    for (let i = 0; i <= edge1; i++) half2.push(poly[i]);
+    half2.push(point1);
     
     return [half1, half2].filter(h => h.length >= 3);
   }
@@ -1672,6 +1790,39 @@ class Ward {
       'park': 'Park'
     };
     return labels[this.wardType] || '';
+  }
+  
+  shrinkPolygon(poly, amount) {
+    // Inset polygon - calls overridable implementation
+    if (!poly || poly.length < 3 || amount <= 0) return poly;
+    return this.shrinkPolygonImpl(poly, amount);
+  }
+  
+  shrinkPolygonImpl(poly, amount) {
+    // Default: distance-based shrinking (inset by fixed amount)
+    const center = poly.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+    center.x /= poly.length;
+    center.y /= poly.length;
+    
+    const shrunk = [];
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist > amount) {
+        const factor = (dist - amount) / dist;
+        shrunk.push(new Point(
+          center.x + dx * factor,
+          center.y + dy * factor
+        ));
+      } else {
+        shrunk.push(new Point(center.x, center.y));
+      }
+    }
+    
+    return shrunk.length >= 3 ? shrunk : poly;
   }
 }
 
@@ -1884,7 +2035,8 @@ class Castle extends Ward {
     }
   }
 
-  shrinkPolygon(poly, amount) {
+  shrinkPolygonImpl(poly, amount) {
+    // Castle: percentage-based shrinking
     const center = poly.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
     center.x /= poly.length;
     center.y /= poly.length;
@@ -1910,7 +2062,8 @@ class Cathedral extends Ward {
     }
   }
 
-  shrinkPolygon(poly, amount) {
+  shrinkPolygonImpl(poly, amount) {
+    // Cathedral: percentage-based shrinking
     const center = poly.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
     center.x /= poly.length;
     center.y /= poly.length;
@@ -2461,7 +2614,8 @@ class Slum extends Ward {
     return buildings;
   }
 
-  shrinkPolygon(poly, amount) {
+  shrinkPolygonImpl(poly, amount) {
+    // Slum: percentage-based shrinking
     const center = poly.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
     center.x /= poly.length;
     center.y /= poly.length;
@@ -3093,7 +3247,6 @@ class CityModel {
       return;
     }
     
-    // Use the exact same logic as Haxe Model.findCircumference
     const A = [];
     const B = [];
     
@@ -4995,8 +5148,8 @@ class CityModel {
       const roadAngle = Math.atan2(road[midIdx].y - cityCenter.y, road[midIdx].x - cityCenter.x);
       const roadPos = road[midIdx];
       
-      // 5-8 radials PER STREET, evenly spaced
-      const numRadials = 5 + Random.int(0, 4);
+      // 8-15 radials PER STREET, evenly spaced
+      const numRadials = 6 + Random.int(0, 8);
       
       // Calculate even spacing - same as ring spacing
       const ringSpacing = arcRings.length > 1 ? arcRings[1].radius - arcRings[0].radius : maxRadius * 0.03;
@@ -5032,15 +5185,18 @@ class CityModel {
           
           // Check if we're crossing an arc ring
           let nearRing = null;
-          for (const ring of arcRings) {
-            if (Math.abs(currentRadius - ring.radius) < alleyWidth * 3.5) {
-              nearRing = ring;
+          let ringIndex = -1;
+          for (let i = 0; i < arcRings.length; i++) {
+            if (Math.abs(currentRadius - arcRings[i].radius) < alleyWidth * 3.5) {
+              nearRing = arcRings[i];
+              ringIndex = i;
               break;
             }
           }
           
           // ALWAYS make left/right decision at intersections
-          if (nearRing) {
+          // Skip the first ring (index 0) to avoid ghostly circle around city
+          if (nearRing && ringIndex > 0) {
             // Check if arc is still active at this distance from street
             if (Random.float() < arcFadeProb) {
               // WRAP AROUND THE ARC
@@ -5058,7 +5214,7 @@ class CityModel {
               
               // Travel along arc
               const arcSegment = [];
-              const numArcSteps = 5 + Random.int(0, 4);
+              const numArcSteps = 6 + Random.int(0, 8);
               for (let a = 0; a <= numArcSteps; a++) {
                 const t = a / numArcSteps;
                 const angle = startAngle + (endAngle - startAngle) * t;
@@ -5162,7 +5318,9 @@ class CityModel {
       
       // INVERSE SQUARE ROOT BOOST: Buildings near city+streets get massive density increase
       // distFromCity is in world units from city edge
-      const cityDistBoost = 1.0 / Math.sqrt(Math.max(1, distFromCity - this.cityRadius));
+      // ONLY APPLY OUTSIDE THE CITY (distFromCity > cityRadius)
+      const isOutsideCity = distFromCity > this.cityRadius;
+      const cityDistBoost = isOutsideCity ? 1.0 / Math.sqrt(Math.max(1, distFromCity - this.cityRadius)) : 1.0;
       
       let probability = 0;
       
@@ -5197,7 +5355,7 @@ class CityModel {
       }
       
       // 300% BASE INCREASE for slum wards + 200% overall density boost
-      if (Random.float() < probability * 1.2 * 14.0) {
+      if (Random.float() < probability * 30.0) {
         patch.ward = new Slum(this, patch);
       }
     }
@@ -6018,12 +6176,13 @@ class CityRenderer {
       // Bridges (from topology water-crossing edges)
       const bridges = (this.model.bridges || []).map(seg => ({ a: seg[0], b: seg[1] }));
     
-    // Add exterior roads
+    // Add exterior roads (preserve isAlley flag for rendering)
     if (this.model.exteriorRoads) {
       for (const road of this.model.exteriorRoads) {
         streets.push({
           path: road,
-          major: false
+          major: false,
+          isAlley: road.isAlley || false
         });
       }
     }
@@ -6959,15 +7118,15 @@ class CityRenderer {
       ctx.lineTo(road[i].x, road[i].y);
     }
     
-    // Alleys are much thinner than regular streets (30% width - 70% fainter)
+    // Alleys are nearly invisible - just enough to affect building placement
     if (road.isAlley) {
-      ctx.strokeStyle = Palette.dark + '60';
-      ctx.lineWidth = (StateManager.streetWidth * 0.05 || 0.1) / this.scale;
+      ctx.strokeStyle = Palette.dark + '10'; // 3% opacity - barely visible
+      ctx.lineWidth = (StateManager.streetWidth * 0.03 || 0.1) / this.scale;
       ctx.lineCap = 'round';
       ctx.stroke();
     } else {
       // Regular roads are thicker and more visible than interior streets
-      ctx.strokeStyle = Palette.dark + '60';
+      ctx.strokeStyle = Palette.dark + '80';
       ctx.lineWidth = (StateManager.streetWidth * 1.5 || 3.0) / this.scale;
       ctx.lineCap = 'round';
       ctx.stroke();
@@ -6977,7 +7136,7 @@ class CityRenderer {
   drawBuildings(ctx, buildings, inside = true, wardType = null) {
     if (!StateManager.showBuildings) return;
     
-    const gap = StateManager.lotsMode ? Math.min(this.model.buildingGap, 1.0) : this.model.buildingGap;
+    const gap = this.model.buildingGap; // Use full gap value in both modes
     const border = this.model.borderShape;
     let didClip = false;
     if (Array.isArray(border) && border.length >= 3) {
@@ -7012,7 +7171,8 @@ class CityRenderer {
         const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
         center.x /= building.length;
         center.y /= building.length;
-        const shrinkFactor = 1 - (gap * 0.15);
+        // More aggressive shrink factor for better visual separation
+        const shrinkFactor = 1 - Math.min(0.45, gap * 0.2);
         return building.map(p => new Point(
           center.x + (p.x - center.x) * shrinkFactor,
           center.y + (p.y - center.y) * shrinkFactor
@@ -8960,38 +9120,54 @@ class RoadsView {
     
     ctx.save();
     
-    // Draw in two passes: outline first, then fill
+    // Draw in three passes: major roads, minor roads, then alleys (nearly invisible)
     if (showMajor) {
-      this.drawRoadLayer(ctx, this.roads.filter(r => r.major), true);
+      this.drawRoadLayer(ctx, this.roads.filter(r => r.major && !r.isAlley), true, false);
     }
     if (showMinor) {
-      this.drawRoadLayer(ctx, this.roads.filter(r => !r.major), false);
+      this.drawRoadLayer(ctx, this.roads.filter(r => !r.major && !r.isAlley), false, false);
     }
+    // Draw alleys last with minimal visibility
+    this.drawRoadLayer(ctx, this.roads.filter(r => r.isAlley), false, true);
     
     ctx.restore();
   }
   
-  drawRoadLayer(ctx, roads, isMajor) {
+  drawRoadLayer(ctx, roads, isMajor, isAlley) {
     const baseWidth = this.settings.streetWidth || 4.0;
-    const width = isMajor ? baseWidth * 0.75 : baseWidth * 0.375;
-    const outlineWidth = isMajor ? baseWidth * 1.125 : baseWidth * 0.625;
     
-    // Draw outlines
-    ctx.strokeStyle = this.palette.dark;
-    ctx.lineWidth = outlineWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    for (const road of roads) {
-      this.drawRoad(ctx, road);
-    }
-    
-    // Draw fills
-    ctx.strokeStyle = this.palette.paper;
-    ctx.lineWidth = width;
-    
-    for (const road of roads) {
-      this.drawRoad(ctx, road);
+    if (isAlley) {
+      // Alleys: nearly invisible (3% opacity, extremely thin)
+      ctx.strokeStyle = this.palette.dark + '08'; // 3% opacity
+      ctx.lineWidth = baseWidth * 0.03;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      for (const road of roads) {
+        this.drawRoad(ctx, road);
+      }
+    } else {
+      // Regular roads: normal two-pass rendering
+      const width = isMajor ? baseWidth * 0.75 : baseWidth * 0.375;
+      const outlineWidth = isMajor ? baseWidth * 1.125 : baseWidth * 0.625;
+      
+      // Draw outlines
+      ctx.strokeStyle = this.palette.dark;
+      ctx.lineWidth = outlineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      for (const road of roads) {
+        this.drawRoad(ctx, road);
+      }
+      
+      // Draw fills
+      ctx.strokeStyle = this.palette.paper;
+      ctx.lineWidth = width;
+      
+      for (const road of roads) {
+        this.drawRoad(ctx, road);
+      }
     }
   }
   
@@ -9606,35 +9782,35 @@ class StateManager {
   static seed = -1;
   static plazaNeeded = true;
   static citadelNeeded = true;
-  static urbanCastle = true; // Castle inside the city walls (default enabled per user prefs)
+  static urbanCastle = false; // Castle inside the city walls
   static wallsNeeded = true;
   static gatesNeeded = true;
-  static gridChaos = 0.4;
-  static sizeChaos = 0.6;
-  static cellChaos = 0.0;
-  static alleyWidth = 2.2; // default tightened spacing per chosen settings
+  static gridChaos = 0.7;
+  static sizeChaos = 0.8;
+  static cellChaos = 1.0;
+  static alleyWidth = 2.4;
   static streetWidth = 3.5;
-  static buildingGap = 2.0;
+  static buildingGap = 0.2;
   static showLabels = false;
-  static wallThickness = 2.5;
+  static wallThickness = 2.0;
   static showCellOutlines = false;
   static showBuildings = true;
   static showStreets = true;
   static showWater = true; // Show water bodies (coast/river) - default enabled
-  static coast = 0;         // 1 to force coast, 0 to disable
-  static river = 0;         // 1 to enable river (independent)
+  static coast = 1;         // 1 to force coast, 0 to disable
+  static river = 1;         // 1 to enable river (independent)
   static canal = 0;         // 1 to enable canal (independent)
   static riverType = 'none'; // back-compat: 'none' | 'river' | 'canal' | 'both'
   static riverMeander = 0.5; // 0-1: micro-meander noise intensity (0=pure sine, 1=max chaos)
-  static lotsMode = true;  // Lots Mode default enabled per user prefs
-  static zoom = 1.0;
-  static plazaChance = 0.3; // Chance of central feature in plaza
+  static lotsMode = 'normal';  // Building style: 'lots', 'normal', or 'mix'
+  static plazaChance = 0.05; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
   static flythroughActive = false; // Flythrough camera mode
   static showTrees = true; // Trees default enabled per user prefs
   static shantytown = true; // Shantytown default enabled per user prefs
   static cameraOffsetX = 0; // Camera pan X offset
   static cameraOffsetY = 0; // Camera pan Y offset
+  static zoom = 1.0; // Zoom level for 2D rendering
   static view3D = false;     // Toggle between 2D and 3D rendering
   static camera3DHeight = 80; // 3D camera height for overview
   static camera3DFOV = 60;   // 3D camera field of view (degrees)
@@ -9701,7 +9877,9 @@ class StateManager {
     if (params.has('lots')) StateManager.lotsMode = bool(params.get('lots'));
     if (params.has('regions')) StateManager.showRegionNames = bool(params.get('regions'));
     const display = params.get('display');
-    if (display && display.toLowerCase() === 'lots') StateManager.lotsMode = true;
+    if (display && display.toLowerCase() === 'lots') StateManager.lotsMode = 'lots';
+    if (display && display.toLowerCase() === 'normal') StateManager.lotsMode = 'normal';
+    if (display && display.toLowerCase() === 'mix') StateManager.lotsMode = 'mix';
   }
 
   static pushParams() {

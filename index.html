@@ -108,6 +108,17 @@
     .checkbox-grid label {
       margin-bottom: 0;
     }
+    .radio-inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .radio-inline label {
+      display: inline-flex;
+      align-items: center;
+      margin: 0;
+      white-space: nowrap;
+    }
     .slider-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -202,28 +213,32 @@
           '<label><input type="checkbox" id="show-water-check" checked> Show Water</label>' +
           '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
           '<label style="display:none;"><input type="checkbox" id="view-3d-check"> 3D View</label>' +
-          '<label><input type="checkbox" id="urban-castle-check" checked> Urban Castle</label>' +
+          '<label><input type="checkbox" id="urban-castle-check"> Urban Castle</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
-          '<label><input type="checkbox" id="lots-check" checked> Lots Mode</label>' +
+          '<div class="radio-inline">' +
+          '<label><input type="radio" name="lots-mode" value="normal" checked> Norm</label>' +
+          '<label><input type="radio" name="lots-mode" value="mix"> Mix</label>' +
+          '<label><input type="radio" name="lots-mode" value="lots"> Lot</label>' +
+          '</div>' +
           '<label><input type="checkbox" id="show-trees-check" checked> Show Trees</label>' +
           '</div>' +
           '<div class="slider-grid">' +
-          '<label>Grid Chaos: <span id="grid-chaos-value">0.4</span><br>' +
-          '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.4"></label>' +
-          '<label>Size Chaos: <span id="size-chaos-value">0.6</span><br>' +
-          '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.6"></label>' +
-          '<label>Cell Size Chaos: <span id="cell-chaos-value">0.0</span><br>' +
-          '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="0.0"></label>' +
-          '<label>Alley Width: <span id="alley-width-value">2.2</span><br>' +
-          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="2.2"></label>' +
+          '<label>Grid Chaos: <span id="grid-chaos-value">0.7</span><br>' +
+          '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.7"></label>' +
+          '<label>Size Chaos: <span id="size-chaos-value">0.8</span><br>' +
+          '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.8"></label>' +
+          '<label>Cell Size Chaos: <span id="cell-chaos-value">1.0</span><br>' +
+          '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="1.0"></label>' +
+          '<label>Alley Width: <span id="alley-width-value">2.4</span><br>' +
+          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="2.4"></label>' +
           '<label>Street Width: <span id="street-width-value">3.5</span><br>' +
           '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="3.5"></label>' +
-          '<label>Building Gap: <span id="building-gap-value">2</span><br>' +
-          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="2"></label>' +
-          '<label>Wall Thickness: <span id="wall-thickness-value">2.5</span><br>' +
-          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="2.5"></label>' +
-          '<label>Piazza Chance: <span id="plaza-chance-value">10%</span><br>' +
-          '<input type="range" id="plaza-chance" min="0" max="1" step="0.1" value="0.1"></label>' +
+          '<label>Building Gap: <span id="building-gap-value">0.2</span><br>' +
+          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="0.2"></label>' +
+          '<label>Wall Thickness: <span id="wall-thickness-value">2.0</span><br>' +
+          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="2.0"></label>' +
+          '<label>Piazza Chance: <span id="plaza-chance-value">5%</span><br>' +
+          '<input type="range" id="plaza-chance" min="0" max="1" step="0.05" value="0.05"></label>' +
           '</div>' +
           '<div id="camera-3d-controls" style="display:none;">' +
           '<h4>3D Camera</h4>' +
@@ -240,9 +255,9 @@
           '</div>' +
           '<h3>Water</h3>' +
           '<div class="checkbox-grid three-col" id="water-grid">' +
-          '<label><input type="checkbox" id="river-check"> River</label>' +
+          '<label><input type="checkbox" id="river-check" checked> River</label>' +
           '<label><input type="checkbox" id="canal-check"> Canal</label>' +
-          '<label><input type="checkbox" id="coast-check"> Coast</label>' +
+          '<label><input type="checkbox" id="coast-check" checked> Coast</label>' +
           '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
@@ -428,13 +443,19 @@
           });
         }
 
-        const lotsEl = document.getElementById('lots-check');
-        if (lotsEl) {
-          lotsEl.addEventListener('change', function() {
-            StateManager.lotsMode = this.checked;
+        const lotsRadios = document.querySelectorAll('input[name="lots-mode"]');
+        lotsRadios.forEach(radio => {
+          radio.addEventListener('change', function() {
+            if (this.value === 'lots') {
+              StateManager.lotsMode = 'lots';
+            } else if (this.value === 'normal') {
+              StateManager.lotsMode = 'normal';
+            } else if (this.value === 'mix') {
+              StateManager.lotsMode = 'mix';
+            }
             generator.generate();
           });
-        }
+        });
 
         const urbanCastleEl = document.getElementById('urban-castle-check');
         if (urbanCastleEl) {
@@ -497,7 +518,11 @@
         syncCheckbox('show-water-check', StateManager.showWater);
         syncCheckbox('show-trees-check', StateManager.showTrees);
         syncCheckbox('shantytown-check', StateManager.shantytown);
-        syncCheckbox('lots-check', StateManager.lotsMode);
+        
+        // Sync lots mode radio buttons
+        const lotsValue = StateManager.lotsMode === true ? 'lots' : (StateManager.lotsMode || 'lots');
+        const lotsRadio = document.querySelector(`input[name="lots-mode"][value="${lotsValue}"]`);
+        if (lotsRadio) lotsRadio.checked = true;
         syncCheckbox('urban-castle-check', StateManager.urbanCastle);
         syncCheckbox('river-check', StateManager.river === 1);
         syncCheckbox('canal-check', StateManager.canal === 1);
