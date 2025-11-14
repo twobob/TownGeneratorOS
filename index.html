@@ -168,11 +168,6 @@
   <div id="app">
     <div class="loading-message">Loading city generator…</div>
   </div>
-  <!-- LittleJS - Lightweight 2D/3D engine (~30KB) -->
-  <script src="https://cdn.jsdelivr.net/npm/littlejsengine@1.9.8/dist/littlejs.min.js"></script>
-  <script src="src/renderer3d_pure.js"></script>
-  <script src="src/wall_mesh_helper.js"></script>
-  <script src="src/building_mesh_helper.js"></script>
   <script src="src/towngenerator_new.js"></script>
   <script>
     (function () {
@@ -211,13 +206,11 @@
           '<label><input type="checkbox" id="buildings-check" checked> Show Buildings</label>' +
           '<label><input type="checkbox" id="citadel-check" checked> Citadel</label>' +
           '<label><input type="checkbox" id="show-water-check" checked> Show Water</label>' +
-          '<label style="display:none;"><input type="checkbox" id="flythrough-check"> Flythrough Mode</label>' +
-          '<label style="display:none;"><input type="checkbox" id="view-3d-check"> 3D View</label>' +
           '<label><input type="checkbox" id="urban-castle-check"> Urban Castle</label>' +
           '<label><input type="checkbox" id="streets-check" checked> Show Streets</label>' +
           '<div class="radio-inline">' +
-          '<label><input type="radio" name="lots-mode" value="normal" checked> Norm</label>' +
-          '<label><input type="radio" name="lots-mode" value="mix"> Mix</label>' +
+          '<label><input type="radio" name="lots-mode" value="normal" > Norm</label>' +
+          '<label><input type="radio" name="lots-mode" value="mix" checked> Mix</label>' +
           '<label><input type="radio" name="lots-mode" value="lots"> Lot</label>' +
           '</div>' +
           '<label><input type="checkbox" id="show-trees-check" checked> Show Trees</label>' +
@@ -239,19 +232,6 @@
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="2.0"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">5%</span><br>' +
           '<input type="range" id="plaza-chance" min="0" max="1" step="0.05" value="0.05"></label>' +
-          '</div>' +
-          '<div id="camera-3d-controls" style="display:none;">' +
-          '<h4>3D Camera</h4>' +
-          '<div class="slider-grid">' +
-          '<label>Height: <span id="camera-height-value">2</span><br>' +
-          '<input type="range" id="camera-height" min="2" max="500" step="2" value="2"></label>' +
-          '<label>FOV: <span id="camera-fov-value">60°</span><br>' +
-          '<input type="range" id="camera-fov" min="30" max="120" step="5" value="60"></label>' +
-          '<label>Angle: <span id="camera-angle-value">0°</span><br>' +
-          '<input type="range" id="camera-angle" min="0" max="360" step="5" value="0"></label>' +
-          '<label>Building Count: <span id="building-count-value">All</span><br>' +
-          '<input type="range" id="building-count" min="1" max="1000" step="1" value="1000"></label>' +
-          '</div>' +
           '</div>' +
           '<h3>Water</h3>' +
           '<div class="checkbox-grid three-col" id="water-grid">' +
@@ -464,20 +444,6 @@
             generator.generate();
           });
         }
-        
-        document.getElementById('flythrough-check').addEventListener('change', function() {
-          generator.toggleFlythrough();
-        });
-        
-        document.getElementById('view-3d-check').addEventListener('change', function() {
-          StateManager.view3D = this.checked;
-          // Show/hide 3D camera controls
-          const controls3D = document.getElementById('camera-3d-controls');
-          if (controls3D) {
-            controls3D.style.display = this.checked ? 'block' : 'none';
-          }
-          generator.render();
-        });
         
         document.getElementById('show-trees-check').addEventListener('change', function() {
           StateManager.showTrees = this.checked;

@@ -8,19 +8,6 @@
 // Configuration Constants
 // ============================================================================
 
-const FLYTHROUGH_CONFIG = {
-  CAMERA_HEIGHT: 6.0,        // Camera height above ground (roughly 6 feet)
-  CAMERA_SPEED: 0.5,         // Movement speed (units per frame) - slower for first-person
-  CAMERA_ZOOM: 30.0,         // Zoom level for first-person view (high zoom = ground level view)
-  LOOK_AHEAD_DISTANCE: 5.0,  // How far ahead the camera looks
-};
-
-// 3D Rendering Configuration
-const RENDER_3D_CONFIG = {
-  NEAR_PLANE_CULL_THRESHOLD: 0.5  // View-space Z threshold for near-plane culling (positive = in front of camera)
-                                   // Cull triangles with any vertex closer than this distance
-                                   // Override in console: RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD = 1.0
-};
 
 // Voronoi Diagram Configuration
 const VORONOI_RELAXATION_ITERATIONS = 2;  // Number of Lloyd's relaxation iterations to apply to Voronoi diagram
@@ -1824,6 +1811,20 @@ class Ward {
     
     return shrunk.length >= 3 ? shrunk : poly;
   }
+  
+  isPointInPolygon(point, polygon) {
+    // Ray casting algorithm for point-in-polygon test
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      const intersect = ((yi > point.y) !== (yj > point.y))
+          && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
 }
 
 // Special ward types
@@ -1847,8 +1848,26 @@ class Castle extends Ward {
     
     this.geometry = [];
     
-    // Inner citadel wall (thick defensive perimeter)
-    const innerWall = this.shrinkPolygon(this.shape, 3);
+    // Start with the patch shape, but clip out any water bodies FIRST
+    let buildableShape = this.shape;
+    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      for (const water of this.model.waterBodies) {
+        if (water && water.length >= 3) {
+          buildableShape = this.clipOutside(buildableShape, water);
+        }
+      }
+    }
+    
+    // If most of the patch is underwater, skip castle entirely
+    if (!buildableShape || buildableShape.length < 3) {
+      this.geometry = [];
+      this.towers = [];
+      this.citadelWall = [];
+      return;
+    }
+    
+    // Inner citadel wall (thick defensive perimeter) from buildable area
+    const innerWall = this.shrinkPolygon(buildableShape, 3);
     this.citadelWall = innerWall;
     
     // Add corner towers - size scales with wallThickness
@@ -1892,9 +1911,58 @@ class Castle extends Ward {
     }
     this.citadelGate = gateVertex;
     
-    // Inner keep buildings
-    const keep = this.shrinkPolygon(innerWall, 8);
-    const buildings = this.createAlleys(keep, 15, 0.1, 0.1, Random.chance(0.4));
+    // Inner keep buildings - NO street constraints, build directly in available space
+    const keep = this.shrinkPolygon(innerWall, 8); // More aggressive shrink for smaller castle
+    
+    // Create central keep building (the main fortress)
+    const centralKeep = this.shrinkPolygon(keep, 0.55); // 55% shrink = moderate central building
+    const buildings = [centralKeep];
+    
+    // Add support buildings in a ring around the central keep
+    // Create two concentric polygons for inner and outer ring boundaries
+    const keepRadius = keep.reduce((sum, p) => sum + Point.distance(center, p), 0) / keep.length;
+    const innerRingRadius = keepRadius * 0.60; // Buildings start here (outside central keep)
+    const outerRingRadius = keepRadius * 0.88; // Buildings end here (close to keep wall)
+    
+    // Create 6-8 rectangular buildings arranged radially
+    const numSupportBuildings = 6;
+    const angleStep = (Math.PI * 2) / numSupportBuildings;
+    const buildingAngularWidth = angleStep * 0.65; // Leave more gaps between buildings
+    
+    for (let i = 0; i < numSupportBuildings; i++) {
+      const centerAngle = i * angleStep;
+      const angle1 = centerAngle - buildingAngularWidth / 2;
+      const angle2 = centerAngle + buildingAngularWidth / 2;
+      
+      // Create rectangular building as a wedge from inner to outer radius
+      const innerPt1 = new Point(
+        center.x + Math.cos(angle1) * innerRingRadius,
+        center.y + Math.sin(angle1) * innerRingRadius
+      );
+      const innerPt2 = new Point(
+        center.x + Math.cos(angle2) * innerRingRadius,
+        center.y + Math.sin(angle2) * innerRingRadius
+      );
+      const outerPt1 = new Point(
+        center.x + Math.cos(angle2) * outerRingRadius,
+        center.y + Math.sin(angle2) * outerRingRadius
+      );
+      const outerPt2 = new Point(
+        center.x + Math.cos(angle1) * outerRingRadius,
+        center.y + Math.sin(angle1) * outerRingRadius
+      );
+      
+      const building = [innerPt1, innerPt2, outerPt1, outerPt2];
+      
+      // Verify building doesn't overlap with central keep
+      const bCenter = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+      bCenter.x /= building.length;
+      bCenter.y /= building.length;
+      
+      if (!this.isPointInPolygon(bCenter, centralKeep)) {
+        buildings.push(building);
+      }
+    }
     
     this.geometry = buildings;
     this.towers = towers;
@@ -2033,6 +2101,97 @@ class Castle extends Ward {
       this.geometry = adjustPolys(this.geometry);
       this.towers = adjustPolys(this.towers);
     }
+  }
+
+  createCastleBuildings(polygon, excludePoly, numBuildings) {
+    // Create castle buildings around the perimeter, avoiding the central keep
+    // No street constraints, alley gaps, or urban planning rules
+    if (!polygon || polygon.length < 3) return [];
+    
+    const buildings = [];
+    const center = polygon.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= polygon.length;
+    center.y /= polygon.length;
+    
+    // Create a ring of buildings between the outer polygon and the excluded central keep
+    // Start with the space between outer and inner
+    const numDivisions = Math.max(6, Math.min(12, polygon.length * 2));
+    
+    for (let i = 0; i < numDivisions; i++) {
+      const angle1 = (i / numDivisions) * Math.PI * 2;
+      const angle2 = ((i + 1) / numDivisions) * Math.PI * 2;
+      const midAngle = (angle1 + angle2) / 2;
+      
+      // Find intersection points with polygon boundary at these angles
+      const rayStart = center;
+      const rayEnd1 = new Point(center.x + Math.cos(angle1) * 1000, center.y + Math.sin(angle1) * 1000);
+      const rayEnd2 = new Point(center.x + Math.cos(angle2) * 1000, center.y + Math.sin(angle2) * 1000);
+      
+      let outerPt1 = null, outerPt2 = null;
+      
+      // Cast rays to find outer boundary points
+      for (let j = 0; j < polygon.length; j++) {
+        const p1 = polygon[j];
+        const p2 = polygon[(j + 1) % polygon.length];
+        
+        if (!outerPt1) {
+          const intersect = this.lineIntersection(rayStart, rayEnd1, p1, p2);
+          if (intersect) outerPt1 = intersect;
+        }
+        if (!outerPt2) {
+          const intersect = this.lineIntersection(rayStart, rayEnd2, p1, p2);
+          if (intersect) outerPt2 = intersect;
+        }
+      }
+      
+      if (!outerPt1 || !outerPt2) continue;
+      
+      // Create building as a sector between the two rays, from inner to outer boundary
+      // Use a fraction of the distance to create building depth
+      const innerDist = 0.45; // Start buildings this far from center (as fraction of outer distance)
+      const dist1 = Point.distance(center, outerPt1);
+      const dist2 = Point.distance(center, outerPt2);
+      
+      const innerPt1 = new Point(
+        center.x + Math.cos(angle1) * dist1 * innerDist,
+        center.y + Math.sin(angle1) * dist1 * innerDist
+      );
+      const innerPt2 = new Point(
+        center.x + Math.cos(angle2) * dist2 * innerDist,
+        center.y + Math.sin(angle2) * dist2 * innerDist
+      );
+      
+      const building = [innerPt1, outerPt1, outerPt2, innerPt2];
+      
+      // Check if building center is not inside the excluded polygon
+      const bCenter = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+      bCenter.x /= building.length;
+      bCenter.y /= building.length;
+      
+      if (!this.isPointInPolygon(bCenter, excludePoly)) {
+        buildings.push(building);
+      }
+    }
+    
+    return buildings;
+  }
+  
+  lineIntersection(p1, p2, p3, p4) {
+    // Find intersection point of line segments (p1,p2) and (p3,p4)
+    const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
+    const x3 = p3.x, y3 = p3.y, x4 = p4.x, y4 = p4.y;
+    
+    const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (Math.abs(denom) < 0.0001) return null;
+    
+    const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+    const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
+    
+    if (u >= 0 && u <= 1) {
+      return new Point(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
+    }
+    
+    return null;
   }
 
   shrinkPolygonImpl(poly, amount) {
@@ -2269,20 +2428,6 @@ class Park extends Ward {
     }
     
     return crown;
-  }
-  
-  isPointInPolygon(point, polygon) {
-    // Ray casting algorithm for point-in-polygon test
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i].x, yi = polygon[i].y;
-      const xj = polygon[j].x, yj = polygon[j].y;
-      
-      const intersect = ((yi > point.y) !== (yj > point.y))
-          && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
-      if (intersect) inside = !inside;
-    }
-    return inside;
   }
 
   getLabel() {
@@ -2815,6 +2960,8 @@ class CityModel {
     if (this.riverNeeded || this.canalNeeded) {
       this.markWaterEdgesFromBodies();
     }
+    // NOW assign citadel AFTER water bodies are complete
+    this.assignCitadel();
     this.buildStreets();
     this.createWards();
     this.buildGeometry();
@@ -2885,6 +3032,9 @@ class CityModel {
     // Key metric: waterbodies count (suppressed verbose details)
     console.log('Waterbodies:', waterCount);
     
+    // Extract water body polygons BEFORE assigning citadel so we can check overlaps
+    this.extractWaterBodies();
+    
     // Now assign city roles to patches (excluding waterbodies)
     let count = 0;
     for (const patch of this.patches) {
@@ -2901,10 +3051,8 @@ class CityModel {
         if (this.plazaNeeded) {
           this.plaza = patch;
         }
-      } else if (count === this.nPatches && this.citadelNeeded) {
-        this.citadel = patch;
-        this.citadel.withinCity = true;
       }
+      // Citadel assignment moved to assignCitadel() which is called after water bodies are built
       
       if (count < this.nPatches) {
         patch.withinCity = true;
@@ -2924,13 +3072,56 @@ class CityModel {
       }
     }
     
-    // Extract water body polygons from waterbody cells for rendering
-    this.extractWaterBodies();
-    
     // Generate named districts after patches are assigned
     this.generateDistricts();
 
     // DCEL will be built after patches are known and withinCity flags set
+  }
+
+  // Assign citadel patch after water bodies are fully built
+  assignCitadel() {
+    if (!this.citadelNeeded) return;
+    
+    // Find first patch outside city walls that doesn't overlap water
+    const outsidePatches = this.patches.filter(p => !p.withinCity && !p.waterbody);
+    
+    for (const patch of outsidePatches) {
+      // Check if this patch overlaps with water bodies
+      let overlapsWater = false;
+      if (Array.isArray(this.waterBodies) && this.waterBodies.length > 0) {
+        const patchCenter = patch.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+        patchCenter.x /= patch.shape.length;
+        patchCenter.y /= patch.shape.length;
+        
+        for (const water of this.waterBodies) {
+          if (water && water.length >= 3) {
+            // Check if patch center is in water
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > patchCenter.y) !== (yj > patchCenter.y))
+                  && (patchCenter.x < (xj - xi) * (patchCenter.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
+            }
+            if (inside) {
+              overlapsWater = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      if (!overlapsWater) {
+        // Assign citadel to first non-water overlapping patch outside city walls
+        this.citadel = patch;
+        this.citadel.withinCity = true;
+        console.log('Citadel assigned to non-water patch');
+        return;
+      }
+    }
+    
+    console.warn('Could not find non-water patch for citadel');
   }
 
   // --- DCEL construction & edge tagging ---
@@ -5018,18 +5209,46 @@ class CityModel {
       p.withinCity && p !== this.plaza && p !== this.citadel && !p.waterbody
     );
     
-    // Plaza if needed
-    if (this.plaza) {
+    // Helper function to check if patch overlaps with water
+    const overlapsWater = (patch) => {
+      if (!Array.isArray(this.waterBodies) || this.waterBodies.length === 0) return false;
+      const patchCenter = Polygon.centroid(patch.shape);
+      for (const water of this.waterBodies) {
+        if (water && water.length >= 3) {
+          let inside = false;
+          for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+            const xi = water[i].x, yi = water[i].y;
+            const xj = water[j].x, yj = water[j].y;
+            const intersect = ((yi > patchCenter.y) !== (yj > patchCenter.y))
+                && (patchCenter.x < (xj - xi) * (patchCenter.y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+          }
+          if (inside) return true;
+        }
+      }
+      return false;
+    };
+
+    // Plaza if needed - avoid water
+    if (this.plaza && !overlapsWater(this.plaza)) {
       this.plaza.ward = new Plaza(this, this.plaza);
+    } else if (this.plaza && overlapsWater(this.plaza)) {
+      // Find alternate plaza patch
+      const alternatePlaza = innerPatches.find(p => !p.ward && !overlapsWater(p));
+      if (alternatePlaza) {
+        this.plaza = alternatePlaza;
+        this.plaza.ward = new Plaza(this, this.plaza);
+      }
     }
 
-    // Citadel outside walls if enabled
+    // Citadel outside walls if enabled - avoid water
     if (this.citadel && this.citadelNeeded) {
       this.citadel.ward = new Castle(this, this.citadel);
     }
-    // Urban castle inside walls if enabled (independent of citadel)
+    
+    // Urban castle inside walls if enabled - avoid water
     if (StateManager.urbanCastle) {
-      const candidates = innerPatches.filter(p => p !== this.plaza && p !== this.citadel && !p.waterbody);
+      const candidates = innerPatches.filter(p => p !== this.plaza && p !== this.citadel && !p.waterbody && !overlapsWater(p));
       const central = candidates.sort((a,b)=>{
         const ca=Polygon.centroid(a.shape), cb=Polygon.centroid(b.shape);
         return Point.distance(ca,new Point(0,0)) - Point.distance(cb,new Point(0,0));
@@ -5044,7 +5263,17 @@ class CityModel {
       const wardType = wardTypes[typeIndex % wardTypes.length];
       typeIndex++;
       
+      // For special ward types that shouldn't overlap water, check and skip if needed
+      if ((wardType === 'market' || wardType === 'merchant' || wardType === 'patriciate' || wardType === 'military' || wardType === 'administration' || wardType === 'cathedral') && overlapsWater(patch)) {
+        console.log(`Skipping ${wardType} on water-overlapping patch`);
+        // Skip this patch and try next - don't increment typeIndex
+        typeIndex--;
+        continue;
+      }
+      
       if (wardType === 'cathedral') {
+        const patchCenter = Polygon.centroid(patch.shape);
+        console.log(`Placing cathedral at (${patchCenter.x.toFixed(1)}, ${patchCenter.y.toFixed(1)}), overlapsWater=${overlapsWater(patch)}`);
         patch.ward = new Cathedral(this, patch);
       } else if (wardType === 'market') {
         patch.ward = new Market(this, patch);
@@ -5609,8 +5838,9 @@ class CityModel {
     
     // For each outside patch, create buildings using lots-mode tessellation + hierarchical placement
     for (const patch of outsidePatches) {
-      // Skip farms only - allow residential buildings to coexist with slums
+      // Skip farms and castles - they have their own building generation
       if (patch.ward instanceof Farm) continue;
+      if (patch.ward instanceof Castle) continue;
       
       let ward = patch.ward;
       if (!ward) { ward = new Ward(this, patch, 'residential'); patch.ward = ward; }
@@ -5814,23 +6044,14 @@ class CityRenderer {
     this.model = model;
     this.formalMap = null;
     this.globalTrees = null;
-    this.flythroughCamera = new FlythroughCamera();
-    
-    // 3D rendering support
-    this.meshCache3D = null;  // Cached 3D meshes {buildings: [], walls: [], streets: []}
-    this.camera3D = null;      // Renderer3D.Camera instance
+
+
     // District label bounding boxes for collision avoidance (reset every render pass)
     this.labelBBoxes = [];
   }
 
   render() {
-    // Use 3D view if enabled
-    if (StateManager.view3D) {
-      this.render3D();
-    } else if (StateManager.flythroughActive && window.generator && window.generator.flythroughCamera) {
-      // Use flythrough camera if active
-      window.generator.flythroughCamera.renderFirstPerson();
-    } else if (StateManager.useViewArchitecture) {
+    if (StateManager.useViewArchitecture) {
       this.renderWithViews();
     } else {
       this.renderClassic();
@@ -6322,7 +6543,7 @@ class CityRenderer {
       (height - margin * 2) / (this.model.cityRadius * 2)
     );
     
-    // Top-down view transform (no flythrough code here)
+  
     const scale = baseScale * (StateManager.zoom || 1.0);
     
     ctx.save();
@@ -6336,7 +6557,6 @@ class CityRenderer {
     this.drawOutsideTerrain(ctx);
     this.drawCityFloor(ctx);
     
-    // Remove view mode filters - simplified
     for (const patch of this.model.patches) {
       this.drawPatch(ctx, patch);
     }
@@ -6418,7 +6638,8 @@ class CityRenderer {
     for (const patch of this.model.patches) {
       if (patch.ward instanceof Castle && patch.ward.geometry) {
         const wardColourTint = this.getWardColourTint(patch.ward);
-        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity, wardColourTint);
+        // Use citadel wall as clip boundary, not city wall
+        this.drawBuildings(ctx, patch.ward.geometry, true, wardColourTint, patch.ward.citadelWall);
       }
     }
     
@@ -7133,11 +7354,11 @@ class CityRenderer {
     }
   }
 
-  drawBuildings(ctx, buildings, inside = true, wardType = null) {
+  drawBuildings(ctx, buildings, inside = true, wardType = null, clipBoundary = null) {
     if (!StateManager.showBuildings) return;
     
     const gap = this.model.buildingGap; // Use full gap value in both modes
-    const border = this.model.borderShape;
+    const border = clipBoundary || this.model.borderShape;
     let didClip = false;
     if (Array.isArray(border) && border.length >= 3) {
       didClip = true;
@@ -7807,26 +8028,7 @@ class CityRenderer {
   }
 
 
-  
 
-  getWardBuildingHeight(wardType) {
-    const heights = {
-      'castle': 800,
-      'cathedral': 960,
-      'temple': 896,
-      'market': 384,
-      'patriciate': 576,
-      'merchants': 480,
-      'craftsmen': 384,
-      'residential': 384,
-      'slum': 256,
-      'farm': 192,
-      'park': 0,
-      'plaza': 0,
-      'administration': 576  // Same as patriciate
-    };
-    return heights[wardType] || 6;
-  }
 
   getWardColour3D(wardType) {
     const colours = {
@@ -7892,647 +8094,11 @@ class CityRenderer {
     return shrunk.length >= 3 ? shrunk : polygon;
   }
 
-  createRoadMesh(path, width, height) {
-    if (!path || path.length < 2) return null;
-    
-    const vertices = [];
-    const faces = [];
-    const halfWidth = width / 2;
-    
-    // Create vertices along both sides of the path
-    for (let i = 0; i < path.length; i++) {
-      const p = path[i];
-      
-      // Calculate perpendicular direction
-      let perpX, perpY;
-      
-      if (i === 0) {
-        // First point: use direction to next point
-        const dx = path[i + 1].x - p.x;
-        const dy = path[i + 1].y - p.y;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        perpX = -dy / len;
-        perpY = dx / len;
-      } else if (i === path.length - 1) {
-        // Last point: use direction from previous point
-        const dx = p.x - path[i - 1].x;
-        const dy = p.y - path[i - 1].y;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        perpX = -dy / len;
-        perpY = dx / len;
-      } else {
-        // Middle points: average of incoming and outgoing directions
-        const dx1 = p.x - path[i - 1].x;
-        const dy1 = p.y - path[i - 1].y;
-        const len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
-        const dx2 = path[i + 1].x - p.x;
-        const dy2 = path[i + 1].y - p.y;
-        const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-        
-        const avgDx = (dx1 / len1 + dx2 / len2) / 2;
-        const avgDy = (dy1 / len1 + dy2 / len2) / 2;
-        const avgLen = Math.sqrt(avgDx * avgDx + avgDy * avgDy);
-        perpX = -avgDy / avgLen;
-        perpY = avgDx / avgLen;
-      }
-      
-      // Create 4 vertices: left bottom, right bottom, left top, right top
-      const leftX = p.x + perpX * halfWidth;
-      const leftZ = p.y + perpY * halfWidth;
-      const rightX = p.x - perpX * halfWidth;
-      const rightZ = p.y - perpY * halfWidth;
-      
-      vertices.push(new window.Renderer3D.Vec3(leftX, 0, leftZ));           // Bottom left
-      vertices.push(new window.Renderer3D.Vec3(rightX, 0, rightZ));         // Bottom right
-      vertices.push(new window.Renderer3D.Vec3(leftX, height, leftZ));      // Top left
-      vertices.push(new window.Renderer3D.Vec3(rightX, height, rightZ));    // Top right
-    }
-    
-    // Create faces connecting segments
-    for (let i = 0; i < path.length - 1; i++) {
-      const baseIdx = i * 4;
-      const nextIdx = (i + 1) * 4;
-      
-      // Top surface (2 triangles)
-      faces.push([baseIdx + 2, nextIdx + 2, baseIdx + 3]);
-      faces.push([nextIdx + 2, nextIdx + 3, baseIdx + 3]);
-      
-      // Bottom surface (2 triangles)
-      faces.push([baseIdx, baseIdx + 1, nextIdx]);
-      faces.push([nextIdx, baseIdx + 1, nextIdx + 1]);
-      
-      // Left side (2 triangles)
-      faces.push([baseIdx, nextIdx, baseIdx + 2]);
-      faces.push([nextIdx, nextIdx + 2, baseIdx + 2]);
-      
-      // Right side (2 triangles)
-      faces.push([baseIdx + 1, baseIdx + 3, nextIdx + 1]);
-      faces.push([nextIdx + 1, baseIdx + 3, nextIdx + 3]);
-    }
-    
-    return { vertices, faces };
-  }
 
-  // Subdivide a path into smaller segments for better triangle resolution
-  subdivideWallPath(path, maxSegmentLength = 10) {
-    const subdivided = [];
-    for (let i = 0; i < path.length; i++) {
-      const p1 = path[i];
-      const p2 = path[(i + 1) % path.length];
-      subdivided.push(p1);
-      
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      
-      if (len > maxSegmentLength) {
-        const numSegments = Math.ceil(len / maxSegmentLength);
-        for (let j = 1; j < numSegments; j++) {
-          const t = j / numSegments;
-          subdivided.push({
-            x: p1.x + dx * t,
-            y: p1.y + dy * t
-          });
-        }
-      }
-    }
-    return subdivided;
-  }
+ 
 
-  build3DMeshes() {
-    // Invalidate cache if wall thickness or building gap changed
-    const cacheKey = `${StateManager.wallThickness}_${StateManager.buildingGap}_${StateManager.buildingCount}`;
-    if (this.meshCache3D && this.meshCache3DKey === cacheKey) {
-      return this.meshCache3D;
-    }
+  
 
-    if (!window.Renderer3D) {
-      console.error('Renderer3D not loaded');
-      return { buildings: [], walls: [], streets: [], ground: null };
-    }
-
-    const { Vec3, extrudePolygonToMesh } = window.Renderer3D;
-    const buildings = [];
-    const walls = [];
-    const streets = [];
-    
-    // Create ground plane - 256x256 grid, 2x city radius (4x larger than previous 0.5x), scaled 64x
-    const cityRadius = this.model.cityRadius || 100;
-    const groundSize = cityRadius * 2 * 64;  // Scale 64x, 2x city radius
-    const gridResolution = 256;  // 16x more triangles (was 64x64, now 256x256)
-    const cellSize = (groundSize * 2) / gridResolution;
-    
-    const groundVertices = [];
-    const groundFaces = [];
-    
-    // Create grid vertices
-    for (let row = 0; row <= gridResolution; row++) {
-      for (let col = 0; col <= gridResolution; col++) {
-        const x = -groundSize + col * cellSize;
-        const z = -groundSize + row * cellSize;
-        groundVertices.push(new Vec3(x, 0, z));
-      }
-    }
-    
-    // Create grid faces (2 triangles per cell)
-    for (let row = 0; row < gridResolution; row++) {
-      for (let col = 0; col < gridResolution; col++) {
-        const topLeft = row * (gridResolution + 1) + col;
-        const topRight = topLeft + 1;
-        const bottomLeft = (row + 1) * (gridResolution + 1) + col;
-        const bottomRight = bottomLeft + 1;
-        
-        // Top face triangles
-        groundFaces.push([topLeft, topRight, bottomLeft]);
-        groundFaces.push([topRight, bottomRight, bottomLeft]);
-        
-        // Bottom face triangles (reverse winding)
-        groundFaces.push([topLeft, bottomLeft, topRight]);
-        groundFaces.push([topRight, bottomLeft, bottomRight]);
-      }
-    }
-    
-    const ground = {
-      mesh: {
-        vertices: groundVertices,
-        faces: groundFaces
-      },
-      color: '#7A9B7A',
-      type: 'ground'
-    };
-
-    for (const patch of this.model.patches) {
-      if (!patch.ward || !patch.ward.geometry) continue;
-
-      const wardType = patch.ward.wardType || 'residential';
-      const buildingHeight = this.getWardBuildingHeight(wardType);
-
-      // Group buildings by ward to reduce fragmentation
-      const wardBuildings = [];
-      for (const polygon of patch.ward.geometry) {
-        if (!polygon || polygon.length < 3) continue;
-        
-        // Only create meshes for buildings larger than a minimum size
-        const area = this.calculatePolygonArea(polygon);
-        if (area < 10) continue; // Increased threshold to skip more tiny polygons
-        
-        // Debug farm buildings
-        if (patch.ward instanceof Farm && wardBuildings.length === 0) {
-          // console.log('Farm building polygon:', polygon);
-          // console.log('Farm building area:', area);
-        }
-        
-        // Apply building gap by shrinking polygon
-        const buildingGap = StateManager.buildingGap || 0;
-        let finalPolygon = polygon;
-        
-        if (buildingGap > 0) {
-          // Shrink polygon inward by buildingGap
-          finalPolygon = this.shrinkPolygon(polygon, buildingGap);
-          if (!finalPolygon || finalPolygon.length < 3) continue;
-        }
-        
-        const polygon2D = finalPolygon.map(p => ({ x: p.x * 64, y: p.y * 64 }));
-        
-        // Ensure the polygon is clean and valid before extrusion
-        if (!window.extrudeBuildingMesh) {
-          console.error('extrudeBuildingMesh not loaded');
-          continue;
-        }
-        
-        const mesh = window.extrudeBuildingMesh(polygon2D, buildingHeight);
-        
-        wardBuildings.push({
-          mesh: mesh,
-          color: this.getWardColour3D(wardType),
-          wardType: wardType,
-          height: buildingHeight
-        });
-      }
-      
-      // Add all ward buildings
-      buildings.push(...wardBuildings);
-    }
-
-    if (this.model.borderShape && this.model.borderShape.length > 0) {
-      const wallHeight = 960;
-      const wallThickness = (StateManager.wallThickness || 5) * 64;
-      const wallPath = this.subdivideWallPath(this.model.borderShape.map(p => ({x: p.x * 64, y: p.y * 64})), 960); // Subdivide into 120-unit segments
-      const wallMesh = window.extrudeWallPath(wallPath, wallHeight, wallThickness);
-      
-      walls.push({
-        mesh: wallMesh,
-        color: '#8B7D6B',
-        type: 'city-wall'
-      });
-    }
-
-    for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle && patch.ward.wall) {
-        const wallHeight = 768;
-        const wallThickness = (StateManager.wallThickness * 0.5 || 2.5) * 64;
-        const wallPath = this.subdivideWallPath(patch.ward.wall.map(p => ({x: p.x * 64, y: p.y * 64})), 768); // Subdivide into 96-unit segments
-        const wallMesh = window.extrudeWallPath(wallPath, wallHeight, wallThickness);
-        
-        walls.push({
-          mesh: wallMesh,
-          color: '#9B8D7B',
-          type: 'citadel-wall'
-        });
-      }
-    }
-
-    // Build street meshes from this.streets (not this.model.streets)
-    const cityStreets = this.streets || this.model.streets || [];
-    // console.log(`Building 3D meshes - this.streets: ${this.streets ? this.streets.length : 'undefined'}`);
-    // console.log(`Building 3D meshes - this.model.streets: ${this.model.streets ? this.model.streets.length : 'undefined'}`);
-    // console.log(`Building 3D meshes for ${cityStreets.length} streets`);
-    
-    for (const street of cityStreets) {
-      if (!street || street.length < 2) continue;
-      
-      // Streets are paths (arrays of points), not polygons
-      // Create a ribbon/road mesh along the path
-      const streetWidth = (StateManager.streetWidth || 4) * 64;
-      const roadMesh = this.createRoadMesh(street.map(p => ({x: p.x * 64, y: p.y * 64})), streetWidth, 0.1);
-      
-      if (roadMesh && roadMesh.vertices.length > 0) {
-        streets.push({
-          mesh: roadMesh,
-          color: '#888888',
-          type: 'street'
-        });
-      }
-    }
-    
-    // Also build exterior roads if they exist
-    const cityRoads = this.exteriorRoads || this.model.exteriorRoads || [];
-    // console.log(`Building 3D meshes - this.exteriorRoads: ${this.exteriorRoads ? this.exteriorRoads.length : 'undefined'}`);
-    // console.log(`Building 3D meshes - this.model.exteriorRoads: ${this.model.exteriorRoads ? this.model.exteriorRoads.length : 'undefined'}`);
-    // console.log(`Building 3D meshes for ${cityRoads.length} exterior roads`);
-    
-    for (const road of cityRoads) {
-      if (!road || road.length < 2) continue;
-      
-      const roadWidth = (StateManager.streetWidth || 4) * 64;
-      const roadMesh = this.createRoadMesh(road.map(p => ({x: p.x * 64, y: p.y * 64})), roadWidth, 0.1);
-      
-      if (roadMesh && roadMesh.vertices.length > 0) {
-        streets.push({
-          mesh: roadMesh,
-          color: '#888888',
-          type: 'road'
-        });
-      }
-    }
-
-    this.meshCache3D = { buildings, walls, streets, ground };
-    this.meshCache3DKey = cacheKey;
-    return this.meshCache3D;
-  }
-
-  render3D() {
-    if (!window.Renderer3D) {
-      console.error('Renderer3D not loaded');
-      return;
-    }
-
-    const ctx = this.ctx;
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-
-    ctx.fillStyle = '#87CEEB';
-    ctx.fillRect(0, 0, width, height);
-
-    const { Camera, drawMesh } = window.Renderer3D;
-
-    const scene = this.build3DMeshes();
-
-    if (!this.camera3D) {
-      this.camera3D = new Camera(
-        StateManager.camera3DFOV,
-        width / height,
-        StateManager.camera3DNear,
-        StateManager.camera3DFar
-      );
-    } else {
-      this.camera3D.setPerspective(
-        StateManager.camera3DFOV,
-        width / height,
-        StateManager.camera3DNear,
-        StateManager.camera3DFar
-      );
-    }
-
-    const cityRadius = this.model.cityRadius || 100;
-    const cameraDistance = cityRadius * 1.2 * 64;  // Scale 64x
-    const angle = StateManager.camera3DAngle;
-    
-    // Apply pan offset from 2D view (inverted to match 2D camera behaviour)
-    const panX = -StateManager.cameraOffsetX / StateManager.zoom * 64;  // Scale 64x
-    const panZ = -StateManager.cameraOffsetY / StateManager.zoom * 64;  // Scale 64x
-    
-    const camX = Math.sin(angle) * cameraDistance + panX;
-    const camY = StateManager.camera3DHeight;
-    const camZ = Math.cos(angle) * cameraDistance + panZ;
-    
-    this.camera3D.setPosition(new window.Renderer3D.Vec3(camX, camY, camZ));
-    this.camera3D.lookAt(new window.Renderer3D.Vec3(panX, 0, panZ));
-
-    ctx.save();
-    ctx.fillStyle = '#8B7355';
-    ctx.fillRect(0, height, width, height);
-    ctx.restore();
-
-    const { drawContactShadows } = window.Renderer3D;
-
-    // Collect ALL triangles from buildings, walls, and streets for unified depth sorting
-    const allTriangles = [];
-
-    // console.log(`3D Render - Streets enabled: ${StateManager.showStreets}, Street count: ${scene.streets.length}`);
-    
-    // RENDER GROUND FIRST (not depth sorted, always in back, no culling)
-    if (scene.ground && scene.ground.mesh) {
-      ctx.fillStyle = scene.ground.color;
-      for (const face of scene.ground.mesh.faces) {
-        const pa = scene.ground.mesh.vertices[face[0]];
-        const pb = scene.ground.mesh.vertices[face[1]];
-        const pc = scene.ground.mesh.vertices[face[2]];
-        const ppa = this.camera3D.projectPoint(pa, width, height);
-        const ppb = this.camera3D.projectPoint(pb, width, height);
-        const ppc = this.camera3D.projectPoint(pc, width, height);
-        
-        // Skip triangles that are completely outside the view frustum
-        if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
-        
-        // Skip triangles completely behind the camera (but allow triangles that intersect near plane)
-        if (ppa.viewZ > 0 && ppb.viewZ > 0 && ppc.viewZ > 0) continue;
-        
-        // Skip back-facing triangles (simple backface culling)
-        const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
-        if (screenNormalZ <= 0) continue;
-        
-        // Render ground immediately
-        ctx.beginPath();
-        ctx.moveTo(ppa.x, ppa.y);
-        ctx.lineTo(ppb.x, ppb.y);
-        ctx.lineTo(ppc.x, ppc.y);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-
-    if (StateManager.showStreets) {
-      // console.log(`Processing ${scene.streets.length} streets for 3D rendering`);
-      for (const street of scene.streets) {
-        if (!street.mesh || !street.mesh.faces || street.mesh.faces.length === 0) {
-          console.warn('Street has no mesh or faces:', street);
-          continue;
-        }
-        
-        for (const face of street.mesh.faces) {
-          const pa = street.mesh.vertices[face[0]];
-          const pb = street.mesh.vertices[face[1]];
-          const pc = street.mesh.vertices[face[2]];
-          
-          if (!pa || !pb || !pc) {
-            console.warn('Street face has missing vertices');
-            continue;
-          }
-          
-          const ppa = this.camera3D.projectPoint(pa, width, height);
-          const ppb = this.camera3D.projectPoint(pb, width, height);
-          const ppc = this.camera3D.projectPoint(pc, width, height);
-          
-          // Frustum culling - skip if completely outside view
-          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
-          
-          // Skip triangles behind the camera (near-plane clipping)
-          if (ppa.depth < -1 || ppb.depth < -1 || ppc.depth < -1) continue;
-          
-          // Backface culling
-          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
-          if (screenNormalZ <= 0) continue;
-          
-          // Calculate face normal for lighting
-          const v1 = pb.sub(pa);
-          const v2 = pc.sub(pa);
-          const normal = window.Renderer3D.Vec3.cross(v1, v2);
-          normal.normalize();
-          
-          // Lighting
-          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
-          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
-          const ambient = 0.3;
-          const diffuse = Math.max(0, sunDot);
-          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
-          
-          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
-          
-          allTriangles.push({
-            pa: ppa, pb: ppb, pc: ppc,
-            depth: avgDepth,
-            brightness: brightness,
-            color: street.color,
-            stroke: '#00000020'
-          });
-        }
-      }
-    }
-
-    if (StateManager.showBuildings) {
-      // Update slider max to actual building count
-      const buildingCountSlider = document.getElementById('building-count');
-      if (buildingCountSlider && parseInt(buildingCountSlider.max) !== scene.buildings.length) {
-        buildingCountSlider.max = scene.buildings.length;
-        buildingCountSlider.value = Math.min(StateManager.buildingCount, scene.buildings.length);
-        document.getElementById('building-count-value').textContent = 
-          buildingCountSlider.value === buildingCountSlider.max ? 'All' : buildingCountSlider.value;
-      }
-      
-      // Limit buildings based on slider count
-      const maxBuildings = Math.min(StateManager.buildingCount, scene.buildings.length);
-      const visibleBuildings = scene.buildings.slice(0, maxBuildings);
-
-      for (let i = 0; i < visibleBuildings.length; i++) {
-        const building = visibleBuildings[i];
-        
-        // Project all triangles and add to global list
-        for (const face of building.mesh.faces) {
-          const pa = building.mesh.vertices[face[0]];
-          const pb = building.mesh.vertices[face[1]];
-          const pc = building.mesh.vertices[face[2]];
-          const ppa = this.camera3D.projectPoint(pa, width, height);
-          const ppb = this.camera3D.projectPoint(pb, width, height);
-          const ppc = this.camera3D.projectPoint(pc, width, height);
-          
-          // Frustum culling - skip if completely outside view
-          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
-          
-          // Skip triangles behind the camera (near-plane clipping)
-          if (ppa.depth < -1 || ppb.depth < -1 || ppc.depth < -1) continue;
-          
-          // Backface culling
-          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
-          if (screenNormalZ <= 0) continue;
-          
-          // Calculate face normal for lighting
-          const v1 = pb.sub(pa);
-          const v2 = pc.sub(pa);
-          const normal = window.Renderer3D.Vec3.cross(v1, v2);
-          normal.normalize();
-          
-          // Lighting
-          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
-          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
-          const ambient = 0.3;
-          const diffuse = Math.max(0, sunDot);
-          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
-          
-          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
-          
-          allTriangles.push({
-            pa: ppa, pb: ppb, pc: ppc,
-            depth: avgDepth,
-            brightness: brightness,
-            color: building.color,
-            stroke: StateManager.showCellOutlines ? '#000000' : 'transparent',
-            wardType: building.wardType,  // Track ward type for hover
-            height: building.height
-          });
-        }
-      }
-    }
-
-    if (StateManager.wallsNeeded) {
-      for (const wall of scene.walls) {
-        for (const face of wall.mesh.faces) {
-          const pa = wall.mesh.vertices[face[0]];
-          const pb = wall.mesh.vertices[face[1]];
-          const pc = wall.mesh.vertices[face[2]];
-          const ppa = this.camera3D.projectPoint(pa, width, height);
-          const ppb = this.camera3D.projectPoint(pb, width, height);
-          const ppc = this.camera3D.projectPoint(pc, width, height);
-          
-          // Frustum culling - skip if completely outside view
-          if (!ppa.visible && !ppb.visible && !ppc.visible) continue;
-          
-          // Skip triangles with ANY vertex too close to camera (view-space Z clipping)
-          if (ppa.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD || 
-              ppb.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD || 
-              ppc.viewZ > -RENDER_3D_CONFIG.NEAR_PLANE_CULL_THRESHOLD) continue;
-          
-          // Backface culling
-          const screenNormalZ = (ppb.x - ppa.x) * (ppc.y - ppa.y) - (ppb.y - ppa.y) * (ppc.x - ppa.x);
-          if (screenNormalZ <= 0) continue;
-          
-          // Calculate face normal for lighting
-          const v1 = pb.sub(pa);
-          const v2 = pc.sub(pa);
-          const normal = window.Renderer3D.Vec3.cross(v1, v2);
-          normal.normalize();
-          
-          // Lighting
-          const sunDir = new window.Renderer3D.Vec3(0.5, -0.7, 0.5);
-          const sunDot = -window.Renderer3D.Vec3.dot(normal, sunDir);
-          const ambient = 0.3;
-          const diffuse = Math.max(0, sunDot);
-          const brightness = Math.min(1.0, ambient + diffuse * 0.7);
-          
-          const avgDepth = ((ppa.depth || 0) + (ppb.depth || 0) + (ppc.depth || 0)) / 3;
-          
-          allTriangles.push({
-            pa: ppa, pb: ppb, pc: ppc,
-            depth: avgDepth,
-            brightness: brightness,
-            color: wall.color,
-            stroke: '#00000060'
-          });
-        }
-      }
-    }
-
-    // Sort ALL triangles by depth (back to front) - ground already rendered separately
-    allTriangles.sort((a, b) => b.depth - a.depth);
-    
-    // Draw all triangles in sorted order
-    ctx.save();
-    for (const tri of allTriangles) {
-      if (!tri.pa.visible && !tri.pb.visible && !tri.pc.visible) continue;
-      
-      ctx.beginPath();
-      ctx.moveTo(tri.pa.x, tri.pa.y);
-      ctx.lineTo(tri.pb.x, tri.pb.y);
-      ctx.lineTo(tri.pc.x, tri.pc.y);
-      ctx.closePath();
-      
-      // Check if this triangle is hovered
-      const isHovered = this.lastHoveredBuilding && tri === this.lastHoveredBuilding;
-      
-      // Shade colour (or use yellow if hovered)
-      let shadedColour;
-      if (isHovered) {
-        shadedColour = '#FFFF00'; // Bright yellow for hovered building
-      } else {
-        const hex = tri.color.replace('#', '');
-        let r = parseInt(hex.substr(0, 2), 16);
-        let g = parseInt(hex.substr(2, 2), 16);
-        let b = parseInt(hex.substr(4, 2), 16);
-        r = Math.floor(r * tri.brightness);
-        g = Math.floor(g * tri.brightness);
-        b = Math.floor(b * tri.brightness);
-        shadedColour = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-      }
-      
-      ctx.fillStyle = shadedColour;
-      ctx.fill();
-      
-      if (tri.stroke !== 'transparent' || isHovered) {
-        ctx.strokeStyle = isHovered ? '#000000' : tri.stroke;
-        ctx.lineWidth = isHovered ? 2 : 0.5;
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-    
-    // Store rendered triangles for hover detection
-    this.lastRenderedTriangles = allTriangles;
-    
-    // Show ward name if hovering
-    if (this.hoveredWardType) {
-      this.showWardInfo(this.hoveredWardType);
-    } else {
-      this.hideWardInfo();
-    }
-  }
-
-  showWardInfo(wardType) {
-    let infoDiv = document.getElementById('ward-info');
-    if (!infoDiv) {
-      infoDiv = document.createElement('div');
-      infoDiv.id = 'ward-info';
-      infoDiv.style.position = 'fixed';
-      infoDiv.style.top = '10px';
-      infoDiv.style.right = '10px';
-      infoDiv.style.background = 'rgba(0,0,0,0.8)';
-      infoDiv.style.color = 'white';
-      infoDiv.style.padding = '10px';
-      infoDiv.style.borderRadius = '5px';
-      infoDiv.style.fontSize = '14px';
-      infoDiv.style.zIndex = '1000';
-      infoDiv.style.pointerEvents = 'none';
-      document.body.appendChild(infoDiv);
-    }
-    infoDiv.textContent = `Ward: ${wardType.charAt(0).toUpperCase() + wardType.slice(1)}`;
-    infoDiv.style.display = 'block';
-  }
-
-  hideWardInfo() {
-    const infoDiv = document.getElementById('ward-info');
-    if (infoDiv) {
-      infoDiv.style.display = 'none';
-    }
-  }
 
 
 }
@@ -9008,13 +8574,18 @@ class PatchView {
     // Fill the patch: override to terrain tones for outside cells
     let fillColour = patch.color || this.palette.light;
     if (!patch.withinCity) {
-      // Compute soft terrain tint based on centroid noise (beige/tan tones)
-      let cx = 0, cy = 0; for (const p of shapeToRender) { cx += p.x; cy += p.y; } cx /= shapeToRender.length; cy /= shapeToRender.length;
-      const n = (PerlinNoise.noise(cx * 0.05, cy * 0.05) + 1) * 0.5;
-      const h = 40 * (1 - n) + 45 * n;  // Beige/tan hue range (40-45 degrees)
-      const s = 25 * (1 - n) + 30 * n;  // Lower saturation for beige
-      const l = 80 * (1 - n) + 85 * n;  // Light tones
-      fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+      // Farms get light green, others get beige/tan terrain
+      if (patch.type === 'farm') {
+        fillColour = '#a7ae89ff';  // Light green for farms
+      } else {
+        // Compute soft terrain tint based on centroid noise (beige/tan tones)
+        let cx = 0, cy = 0; for (const p of shapeToRender) { cx += p.x; cy += p.y; } cx /= shapeToRender.length; cy /= shapeToRender.length;
+        const n = (PerlinNoise.noise(cx * 0.05, cy * 0.05) + 1) * 0.5;
+        const h = 40 * (1 - n) + 45 * n;  // Beige/tan hue range (40-45 degrees)
+        const s = 25 * (1 - n) + 30 * n;  // Lower saturation for beige
+        const l = 80 * (1 - n) + 85 * n;  // Light tones
+        fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+      }
     }
     ctx.fillStyle = fillColour;
     ctx.strokeStyle = this.palette.dark;
@@ -9085,9 +8656,9 @@ class PatchView {
     ctx.closePath();
     ctx.clip();
     
-    // Draw furrows
-    ctx.strokeStyle = 'rgba(101, 67, 33, 0.3)';
-    ctx.lineWidth = 0.5;
+    // Draw furrows with dark brown shading
+    ctx.strokeStyle = this.palette.dark + '40';  // Semi-transparent dark lines
+    ctx.lineWidth = 0.3;
     
     for (const furrow of farm.furrows) {
       // Safety check: ensure furrow has valid start and end points
@@ -9479,266 +9050,7 @@ class FormalMap {
   }
 }
 
-// ============================================================================
-// Flythrough Camera System
-// ============================================================================
 
-class FlythroughCamera {
-  constructor(cityModel, renderer) {
-    this.model = cityModel;
-    this.renderer = renderer;
-    this.active = false;
-    this.position = { x: 0, y: 0 };
-    this.height = FLYTHROUGH_CONFIG.CAMERA_HEIGHT; // 6ft above ground
-    this.angle = 0;
-    this.speed = FLYTHROUGH_CONFIG.CAMERA_SPEED;
-    this.path = [];
-    this.pathIndex = 0;
-    this.animationFrame = null;
-  }
-  
-  start() {
-    this.active = true;
-    this.generatePath();
-    // Reset position to start of path
-    if (this.path.length > 0) {
-      this.position = { x: this.path[0].x, y: this.path[0].y };
-      this.pathIndex = 0;
-    }
-    this.animate();
-  }
-  
-  stop() {
-    this.active = false;
-    if (this.animationFrame) {
-      cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
-  }
-  
-  generatePath() {
-    // Find all street vertices within the city
-    const streetPoints = [];
-    
-    for (const street of this.model.streets) {
-      for (const point of street) {
-        streetPoints.push({ x: point.x, y: point.y });
-      }
-    }
-    
-    // If no streets, create a circular path
-    if (streetPoints.length === 0) {
-      const radius = this.model.cityRadius * 0.8;
-      const segments = 100;
-      for (let i = 0; i < segments; i++) {
-        const angle = (i / segments) * Math.PI * 2;
-        streetPoints.push({
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius
-        });
-      }
-    }
-    
-    // Create a smooth path through random street points
-    this.path = [];
-    const numPoints = Math.min(50, streetPoints.length);
-    const visited = new Set();
-    
-    // Start from a random point
-    let currentIdx = Random.int(0, streetPoints.length);
-    
-    for (let i = 0; i < numPoints; i++) {
-      this.path.push(streetPoints[currentIdx]);
-      visited.add(currentIdx);
-      
-      // Find nearest unvisited point
-      let nearestIdx = -1;
-      let nearestDist = Infinity;
-      
-      for (let j = 0; j < streetPoints.length; j++) {
-        if (visited.has(j)) continue;
-        
-        const dx = streetPoints[j].x - streetPoints[currentIdx].x;
-        const dy = streetPoints[j].y - streetPoints[currentIdx].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestIdx = j;
-        }
-      }
-      
-      if (nearestIdx === -1) break;
-      currentIdx = nearestIdx;
-    }
-    
-    // Close the loop
-    if (this.path.length > 0) {
-      this.path.push(this.path[0]);
-    }
-    
-    this.pathIndex = 0;
-    this.position = this.path[0] || { x: 0, y: 0 };
-  }
-  
-  update() {
-    if (!this.active || this.path.length < 2) return;
-    
-    const current = this.path[this.pathIndex];
-    const next = this.path[(this.pathIndex + 1) % this.path.length];
-    
-    // Move towards next point
-    const dx = next.x - this.position.x;
-    const dy = next.y - this.position.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    
-    if (dist < this.speed) {
-      // Reached waypoint, move to next
-      this.pathIndex = (this.pathIndex + 1) % this.path.length;
-      this.position = { x: next.x, y: next.y };
-    } else {
-      // Move towards waypoint
-      this.position.x += (dx / dist) * this.speed;
-      this.position.y += (dy / dist) * this.speed;
-    }
-    
-    // Update angle to face movement direction (where we're going)
-    this.angle = Math.atan2(dy, dx);
-  }
-  
-  animate() {
-    if (!this.active) return;
-    
-    this.update();
-    
-    // Trigger a render in the generator
-    if (window.generator) {
-      window.generator.render();
-    }
-    
-    // Continue animation loop
-    this.animationFrame = requestAnimationFrame(() => this.animate());
-  }
-  
-  getTransform() {
-    // Calculate first-person view position
-    // Camera is offset slightly forward in the direction it's facing
-    const lookAhead = FLYTHROUGH_CONFIG.LOOK_AHEAD_DISTANCE;
-    const viewX = this.position.x + Math.cos(this.angle) * lookAhead;
-    const viewY = this.position.y + Math.sin(this.angle) * lookAhead;
-    
-    return {
-      x: this.position.x,      // Camera actual position
-      y: this.position.y,
-      viewX: viewX,            // Where camera is looking
-      viewY: viewY,
-      angle: this.angle,       // Direction camera is facing
-      height: this.height,     // Height above ground (6ft)
-      zoom: FLYTHROUGH_CONFIG.CAMERA_ZOOM // First-person zoom level
-    };
-  }
-  
-  /**
-   * Render the city from this camera's first-person perspective
-   */
-  renderFirstPerson() {
-    if (!this.active || !this.renderer) return;
-    
-    const ctx = this.renderer.ctx;
-    const canvas = this.renderer.canvas;
-    const width = canvas.width;
-    const height = canvas.height;
-    
-    // Clear canvas
-    ctx.fillStyle = Palette.paper;
-    ctx.fillRect(0, 0, width, height);
-    
-    const margin = 40;
-    const baseScale = Math.min(
-      (width - margin * 2) / (this.model.cityRadius * 2),
-      (height - margin * 2) / (this.model.cityRadius * 2)
-    );
-    
-    // First-person camera transform
-    const transform = this.getTransform();
-    const scale = baseScale * transform.zoom;
-    
-    // Rotate canvas so the movement direction points up on screen
-    // transform.angle is the direction of movement (from atan2(dy, dx))
-    // We rotate by -angle + PI/2 so that the forward vector points "up" on screen
-    const rotation = -transform.angle + Math.PI / 2;
-    
-    ctx.save();
-    // Center on screen
-    ctx.translate(width / 2, height / 2);
-    // Rotate to face forward (movement direction = up on screen)
-    ctx.rotate(rotation);
-    // Apply zoom
-    ctx.scale(scale, scale);
-    // Translate to camera position (camera at 6ft height looking forward)
-    ctx.translate(-transform.x, -transform.y);
-    
-    this.renderer.scale = scale;
-    
-    // Render city from first-person view
-    for (const patch of this.model.patches) {
-      this.renderer.drawPatch(ctx, patch);
-    }
-    
-    if (this.model.wallsNeeded && this.model.borderShape && this.model.borderShape.length > 0) {
-      this.renderer.drawWall(ctx, this.model.borderShape);
-    }
-    
-    for (const street of this.model.streets) {
-      this.renderer.drawStreet(ctx, street);
-    }
-    
-    // Draw exterior roads
-    if (this.model.exteriorRoads) {
-      for (const road of this.model.exteriorRoads) {
-        this.renderer.drawExteriorRoad(ctx, road);
-      }
-    }
-    
-    for (const patch of this.model.patches) {
-      // Draw citadel walls for Castle wards
-      if (patch.ward instanceof Castle) {
-        this.renderer.drawCitadelWall(ctx, patch);
-      }
-    }
-    
-    if (StateManager.showLabels) {
-      for (const patch of this.model.patches) {
-        if (patch.ward instanceof Park) {
-          this.renderer.drawLabel(ctx, patch, 'Park');
-        } else if (patch === this.model.plaza) {
-          this.renderer.drawLabel(ctx, patch, 'Plaza');
-        } else if (patch === this.model.citadel && !patch.ward) {
-          this.renderer.drawLabel(ctx, patch, 'Citadel');
-        }
-      }
-    }
-
-    // Draw district names with curved text
-    if (StateManager.showRegionNames && this.model.districts) {
-      for (const district of this.model.districts) {
-        this.renderer.drawDistrictLabel(ctx, district);
-      }
-    }
-    
-    // Draw trees if enabled
-    if (StateManager.showTrees) {
-      if (!this.renderer.globalTrees) {
-        this.renderer.globalTrees = this.renderer.spawnGlobalTrees();
-      }
-      if (this.renderer.globalTrees && this.renderer.globalTrees.length > 0) {
-        this.renderer.drawTrees(ctx, this.renderer.globalTrees);
-      }
-    }
-    
-    ctx.restore();
-  }
-}
 
 // ============================================================================
 // District Name Generator
@@ -9805,19 +9117,13 @@ class StateManager {
   static lotsMode = 'normal';  // Building style: 'lots', 'normal', or 'mix'
   static plazaChance = 0.05; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
-  static flythroughActive = false; // Flythrough camera mode
+
   static showTrees = true; // Trees default enabled per user prefs
   static shantytown = true; // Shantytown default enabled per user prefs
   static cameraOffsetX = 0; // Camera pan X offset
   static cameraOffsetY = 0; // Camera pan Y offset
   static zoom = 1.0; // Zoom level for 2D rendering
-  static view3D = false;     // Toggle between 2D and 3D rendering
-  static camera3DHeight = 80; // 3D camera height for overview
-  static camera3DFOV = 60;   // 3D camera field of view (degrees)
-  static camera3DAngle = 0;  // 3D camera rotation angle (radians)
-  static camera3DNear = 0.1; // 3D camera near clipping plane
-  static camera3DFar = 4000; // 3D camera far clipping plane
-  static buildingCount = 1000; // Number of buildings to render (1-1000)
+
   static showRegionNames = true; // Display region/district names over grouped wards
 
   static pullParams() {
@@ -9974,44 +9280,6 @@ class TownGenerator {
         this.render();
         return;
       }
-      
-      // Check for hover in 3D view
-      if (!StateManager.view3D || !this.lastRenderedTriangles) return;
-      
-      // Find the topmost triangle under the mouse
-      let hoveredBuilding = null;
-      for (let i = this.lastRenderedTriangles.length - 1; i >= 0; i--) {
-        const tri = this.lastRenderedTriangles[i];
-        if (!tri.wardType) continue;
-        
-        // Point-in-triangle test
-        const pointInTriangle = (px, py, ax, ay, bx, by, cx, cy) => {
-          const v0x = cx - ax, v0y = cy - ay;
-          const v1x = bx - ax, v1y = by - ay;
-          const v2x = px - ax, v2y = py - ay;
-          const dot00 = v0x * v0x + v0y * v0y;
-          const dot01 = v0x * v1x + v0y * v1y;
-          const dot02 = v0x * v2x + v0y * v2y;
-          const dot11 = v1x * v1x + v1y * v1y;
-          const dot12 = v1x * v2x + v1y * v2y;
-          const invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
-          const u = (dot11 * dot02 - dot01 * dot12) * invDenom;
-          const v = (dot00 * dot12 - dot01 * dot02) * invDenom;
-          return (u >= 0) && (v >= 0) && (u + v <= 1);
-        };
-        
-        if (pointInTriangle(mouseX, mouseY, tri.pa.x, tri.pa.y, tri.pb.x, tri.pb.y, tri.pc.x, tri.pc.y)) {
-          hoveredBuilding = tri;
-          break;
-        }
-      }
-      
-      // If hover changed, store and re-render with yellow highlight
-      if (hoveredBuilding !== this.lastHoveredBuilding) {
-        this.lastHoveredBuilding = hoveredBuilding;
-        this.hoveredWardType = hoveredBuilding ? hoveredBuilding.wardType : null;
-        this.render();
-      }
     });
     
     this.canvas.addEventListener('mouseup', () => {
@@ -10084,7 +9352,7 @@ class TownGenerator {
     
     this.model = CityModel.instance;
     this.renderer = new CityRenderer(this.canvas, this.model);
-    this.flythroughCamera = new FlythroughCamera(this.model, this.renderer);
+
     // Clear cached trees when regenerating
     this.renderer.globalTrees = null;
     this.renderer.render();
@@ -10092,33 +9360,10 @@ class TownGenerator {
     console.log('City generated:', { seed: StateManager.seed, size: StateManager.size });
   }
   
-  toggleFlythrough() {
-    if (!this.flythroughCamera) {
-      console.log('No flythrough camera available');
-      return;
-    }
-    
-    if (StateManager.flythroughActive) {
-      console.log('Stopping flythrough');
-      this.flythroughCamera.stop();
-      StateManager.flythroughActive = false;
-      this.render();
-    } else {
-      console.log('Flythrough start');
-      StateManager.flythroughActive = true;
-      this.flythroughCamera.start();
-    }
-  }
-
+ 
   render() {
     if (this.renderer) {
       this.renderer.render();
-    }
-    
-    // Restart camera if flythrough is active but camera stopped
-    if (StateManager.flythroughActive && this.camera && !this.camera.active) {
-      // Debug (suppressed): restarting stopped flythrough camera
-      this.camera.start();
     }
   }
 
