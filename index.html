@@ -228,8 +228,8 @@
           '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="3.5"></label>' +
           '<label>Building Gap: <span id="building-gap-value">0.2</span><br>' +
           '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="0.2"></label>' +
-          '<label>Wall Thickness: <span id="wall-thickness-value">2.0</span><br>' +
-          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="2.0"></label>' +
+          '<label>Wall Thickness: <span id="wall-thickness-value">4.0</span><br>' +
+          '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="4.0"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">5%</span><br>' +
           '<input type="range" id="plaza-chance" min="0" max="1" step="0.05" value="0.05"></label>' +
           '</div>' +
@@ -486,7 +486,7 @@
         syncCheckbox('shantytown-check', StateManager.shantytown);
         
         // Sync lots mode radio buttons
-        const lotsValue = StateManager.lotsMode === true ? 'lots' : (StateManager.lotsMode || 'lots');
+        const lotsValue = StateManager.lotsMode === true ? 'lots' : (StateManager.lotsMode || 'mix');
         const lotsRadio = document.querySelector(`input[name="lots-mode"][value="${lotsValue}"]`);
         if (lotsRadio) lotsRadio.checked = true;
         syncCheckbox('urban-castle-check', StateManager.urbanCastle);

@@ -9114,7 +9114,7 @@ class StateManager {
   static canal = 0;         // 1 to enable canal (independent)
   static riverType = 'none'; // back-compat: 'none' | 'river' | 'canal' | 'both'
   static riverMeander = 0.5; // 0-1: micro-meander noise intensity (0=pure sine, 1=max chaos)
-  static lotsMode = 'normal';  // Building style: 'lots', 'normal', or 'mix'
+  static lotsMode = 'mix';  // Building style: 'lots', 'normal', or 'mix' - default is mix
   static plazaChance = 0.05; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
 
@@ -9180,7 +9180,12 @@ class StateManager {
     }
     if (params.has('greens')) StateManager.showTrees = bool(params.get('greens'));
     if (params.has('shantytown')) StateManager.shantytown = bool(params.get('shantytown'));
-    if (params.has('lots')) StateManager.lotsMode = bool(params.get('lots'));
+    if (params.has('lots')) {
+      const lotsValue = parseInt(params.get('lots'));
+      if (lotsValue === 0) StateManager.lotsMode = 'normal';
+      else if (lotsValue === 1) StateManager.lotsMode = 'lots';
+      else if (lotsValue === 2) StateManager.lotsMode = 'mix';
+    }
     if (params.has('regions')) StateManager.showRegionNames = bool(params.get('regions'));
     const display = params.get('display');
     if (display && display.toLowerCase() === 'lots') StateManager.lotsMode = 'lots';
@@ -9209,7 +9214,8 @@ class StateManager {
     url.searchParams.set('water', StateManager.showWater ? 1 : 0);
     url.searchParams.set('greens', StateManager.showTrees ? 1 : 0);
     url.searchParams.set('shantytown', StateManager.shantytown ? 1 : 0);
-    url.searchParams.set('lots', StateManager.lotsMode ? 1 : 0);
+    const lotsValue = StateManager.lotsMode === 'normal' ? 0 : (StateManager.lotsMode === 'lots' ? 1 : 2);
+    url.searchParams.set('lots', lotsValue);
     url.searchParams.set('regions', StateManager.showRegionNames ? 1 : 0);
     
     window.history.replaceState(
