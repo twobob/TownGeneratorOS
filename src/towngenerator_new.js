@@ -857,19 +857,8 @@ class Ward {
       if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
         insetShape = this.clipInside(insetShape, this.model.borderShape);
       }
-      // Subtract water polygons from available area so no geometry is placed over water
-      if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
-        const beforeClip = insetShape.length;
-        for (const water of this.model.waterBodies) {
-          if (water && water.length >= 3) {
-            const before = insetShape.length;
-            insetShape = this.clipOutside(insetShape, water);
-            if (insetShape.length !== before) {
-              // Debug (suppressed): water clipped ward shape from before to insetShape.length
-            }
-          }
-        }
-      }
+      // NOTE: Water clipping at this stage doesn't work properly with Sutherland-Hodgman
+      // Buildings underwater will be filtered out after generation instead
       return insetShape;
     }
 
@@ -895,18 +884,8 @@ class Ward {
     if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
       result = this.clipInside(result, this.model.borderShape);
     }
-    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
-      // Debug (suppressed): fallback path clipping against water bodies
-      for (const water of this.model.waterBodies) {
-        if (water && water.length >= 3) {
-          const before = result.length;
-          result = this.clipOutside(result, water);
-          if (result.length !== before) {
-            // Debug (suppressed): water clipped fallback ward from before to result.length
-          }
-        }
-      }
-    }
+    // NOTE: Water clipping at this stage doesn't work properly with Sutherland-Hodgman
+    // Buildings underwater will be filtered out after generation instead
     return result;
   }
   
@@ -1086,7 +1065,7 @@ class Ward {
     if (!polygon || polygon.length < 3) return polygon;
     if (!circle || circle.length < 3) return polygon;
 
-    // Determine orientation of the circle polygon (assumed CCW)
+    // Determine orientation of the clip polygon
     let area2 = 0;
     for (let i = 0; i < circle.length; i++) {
       const a = circle[i];
@@ -1107,37 +1086,51 @@ class Ward {
     };
 
     let output = polygon.slice();
-    // For outside-clip we keep points that are NOT inside each edge half-plane
+    let clipDebug = polygon === this.shape; // Only debug for dock patches
+    // For outside-clip: keep points NOT inside the clip polygon
+    // For CCW polygon: inside is LEFT (>0), outside is RIGHT (<=0)
+    // For CW polygon: inside is RIGHT (<0), outside is LEFT (>=0)
     for (let i = 0; i < circle.length; i++) {
       const A = circle[i];
       const B = circle[(i + 1) % circle.length];
       const input = output;
       output = [];
       if (input.length === 0) break;
+      let edgeClips = 0;
       for (let j = 0; j < input.length; j++) {
         const P = input[j];
         const Q = input[(j + 1) % input.length];
         const Pside = isLeft(A, B, P);
         const Qside = isLeft(A, B, Q);
-        // For CCW clip polygon, inside is left (>=0). We want OUTSIDE.
-        const Pin = ccw ? Pside <= 0 : Pside >= 0;
-        const Qin = ccw ? Qside <= 0 : Qside >= 0;
-        if (Pin && Qin) {
-          // both outside -> keep Q only
+        // Standard Sutherland-Hodgman for OUTSIDE:
+        // For CCW: inside = left (>0), outside = right (<=0)
+        // For CW: inside = right (<0), outside = left (>=0)
+        const Pout = ccw ? Pside <= 0 : Pside >= 0;
+        const Qout = ccw ? Qside <= 0 : Qside >= 0;
+        
+        if (Pout && Qout) {
+          // both outside -> keep Q
           output.push(Q);
-        } else if (Pin && !Qin) {
-          // leaving outside -> add intersection
-          output.push(intersect(P, Q, A, B));
-        } else if (!Pin && Qin) {
-          // entering outside -> add intersection+Q
-          output.push(intersect(P, Q, A, B));
+        } else if (Pout && !Qout) {
+          // P outside, Q inside -> add intersection only
+          const inter = intersect(P, Q, A, B);
+          output.push(inter);
+          edgeClips++;
+        } else if (!Pout && Qout) {
+          // P inside, Q outside -> add intersection then Q
+          const inter = intersect(P, Q, A, B);
+          output.push(inter);
           output.push(Q);
-        } else {
-          // both inside (of clip polygon) -> keep nothing
+          edgeClips++;
         }
+        // else both inside -> keep nothing
       }
+      if (clipDebug && edgeClips > 0) console.log('Edge', i, 'clipped', edgeClips, 'segments, output now:', output.length);
     }
-    return output.length >= 3 ? output : polygon;
+    if (clipDebug) console.log('Final subtractPolygon output:', output.length, 'vertices');
+    // Return the clipped result, or empty array if completely removed
+    if (output.length < 3) return [];
+    return output;
   }
 
   buildGeometry() {
@@ -1825,6 +1818,23 @@ class Ward {
     }
     return inside;
   }
+  
+  getBoundingBox(poly) {
+    // Calculate bounding box for a polygon
+    if (!poly || poly.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    
+    let minX = poly[0].x, maxX = poly[0].x;
+    let minY = poly[0].y, maxY = poly[0].y;
+    
+    for (const p of poly) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    
+    return { minX, minY, maxX, maxY };
+  }
 }
 
 // Special ward types
@@ -1848,26 +1858,17 @@ class Castle extends Ward {
     
     this.geometry = [];
     
-    // Start with the patch shape, but clip out any water bodies FIRST
-    let buildableShape = this.shape;
-    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
-      for (const water of this.model.waterBodies) {
-        if (water && water.length >= 3) {
-          buildableShape = this.clipOutside(buildableShape, water);
-        }
-      }
-    }
+    // Use original shape for castle
+    const buildableShape = this.shape;
     
-    // If most of the patch is underwater, skip castle entirely
-    if (!buildableShape || buildableShape.length < 3) {
+    // Inner citadel wall (thick defensive perimeter) from buildable area
+    const innerWall = this.shrinkPolygon(buildableShape, 3);
+    if (!innerWall || innerWall.length < 3) {
       this.geometry = [];
       this.towers = [];
       this.citadelWall = [];
       return;
     }
-    
-    // Inner citadel wall (thick defensive perimeter) from buildable area
-    const innerWall = this.shrinkPolygon(buildableShape, 3);
     this.citadelWall = innerWall;
     
     // Add corner towers - size scales with wallThickness
@@ -1913,9 +1914,19 @@ class Castle extends Ward {
     
     // Inner keep buildings - NO street constraints, build directly in available space
     const keep = this.shrinkPolygon(innerWall, 8); // More aggressive shrink for smaller castle
+    if (!keep || keep.length < 3) {
+      this.geometry = [];
+      this.towers = towers;
+      return;
+    }
     
     // Create central keep building (the main fortress)
     const centralKeep = this.shrinkPolygon(keep, 0.55); // 55% shrink = moderate central building
+    if (!centralKeep || centralKeep.length < 3) {
+      this.geometry = [];
+      this.towers = towers;
+      return;
+    }
     const buildings = [centralKeep];
     
     // Add support buildings in a ring around the central keep
@@ -1967,139 +1978,47 @@ class Castle extends Ward {
     this.geometry = buildings;
     this.towers = towers;
 
-    // Ensure castles respect water like other wards: clip walls, adjust/elide towers and keep buildings
-    if (Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
-      // Reuse or build water cache
-      if (!this.model._waterCache || this.model._waterCache.length !== this.model.waterBodies.length) {
-        this.model._waterCache = this.model.waterBodies
-          .filter(w => w && w.length >= 3)
-          .map(poly => {
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
-            const edges = [];
-            for (let i = 0; i < poly.length; i++) {
-              const a = poly[i];
-              const b = poly[(i + 1) % poly.length];
-              const dx = b.x - a.x, dy = b.y - a.y;
-              const len2 = dx*dx + dy*dy;
-              const slopeInv = Math.abs(b.y - a.y) > 1e-12 ? (b.x - a.x) / (b.y - a.y) : 0;
-              edges.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, dx, dy, len2, slopeInv });
+    // Simple filter: remove buildings/towers with ANY vertex in water
+    if (this.geometry && this.geometry.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      this.geometry = this.geometry.filter(building => {
+        if (!building || building.length < 3) return false;
+        for (const vertex of building) {
+          for (const water of this.model.waterBodies) {
+            if (!water || water.length < 3) continue;
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > vertex.y) !== (yj > vertex.y)) && 
+                              (vertex.x < (xj - xi) * (vertex.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
             }
-            return { poly, minX, minY, maxX, maxY, edges };
-          });
-      }
-
-      const aabbOverlap = (a, b) => !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
-      const pipFast = (pt, meta) => {
-        if (pt.x < meta.minX || pt.x > meta.maxX || pt.y < meta.minY || pt.y > meta.maxY) return false;
-        let inside = false; const y = pt.y;
-        for (const e of meta.edges) {
-          const yi = e.ay, yj = e.by; if (((yi > y) !== (yj > y))) {
-            const xInt = e.ax + e.slopeInv * (y - yi); if (pt.x < xInt) inside = !inside;
+            if (inside) return false;
           }
         }
-        return inside;
-      };
-      const nearestProjectionMeta = (p, meta) => {
-        let minD = Infinity, projPt = p, eDX = 1, eDY = 0;
-        for (const e of meta.edges) {
-          if (e.len2 < 1e-12) continue;
-          let t = ((p.x - e.ax) * e.dx + (p.y - e.ay) * e.dy) / e.len2;
-          t = Math.max(0, Math.min(1, t));
-          const px = e.ax + t * e.dx; const py = e.ay + t * e.dy;
-          const d = Math.hypot(p.x - px, p.y - py);
-          if (d < minD) { minD = d; projPt = new Point(px, py); eDX = e.dx; eDY = e.dy; }
-        }
-        return { projPt, eDX, eDY, minD };
-      };
+        return true;
+      });
+    }
 
-      // 1) Clip citadel wall against water so it never renders over water
-      if (this.citadelWall && this.citadelWall.length >= 3) {
-        let wall = this.citadelWall;
-        for (const meta of this.model._waterCache) {
-          const before = wall; // keep ref
-          const clipped = this.clipOutside(wall, meta.poly);
-          if (clipped && clipped.length >= 3) wall = clipped;
-        }
-        this.citadelWall = wall;
-      }
-
-      // Helper to adjust a list of polygons like buildings (no waterfront features for castle)
-      const adjustPolys = (polys) => {
-        const out = [];
-        for (const poly of polys) {
-          if (!poly || poly.length < 3) continue;
-          // AABB
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-          for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
-          const margin = 1.0; const expanded = { minX: minX - margin, minY: minY - margin, maxX: maxX + margin, maxY: maxY + margin };
-          const candidates = [];
-          for (const meta of this.model._waterCache) { if (aabbOverlap(expanded, meta)) candidates.push(meta); }
-          if (candidates.length === 0) { out.push(poly); continue; }
-
-          const totalVerts = poly.length; let bestMeta = null; let bestInside = 0;
-          for (const meta of candidates) {
-            let insideC = 0; for (const v of poly) { if (pipFast(v, meta)) insideC++; }
-            if (insideC > bestInside) { bestInside = insideC; bestMeta = meta; }
-            if (insideC >= totalVerts) break;
-          }
-          if (!bestMeta || bestInside === 0) { out.push(poly); continue; }
-          if (bestInside >= totalVerts - 1) { continue; } // elide mostly submerged
-
-          let sumDx = 0, sumDy = 0, wetCount = 0; let nearestOnBoundary = null; let nearestEdge = { dx: 1, dy: 0 }; let nearestDist = Infinity;
-          for (const v of poly) {
-            if (!pipFast(v, bestMeta)) continue;
-            const { projPt, eDX, eDY, minD } = nearestProjectionMeta(v, bestMeta);
-            sumDx += projPt.x - v.x; sumDy += projPt.y - v.y; wetCount++;
-            if (minD < nearestDist) { nearestDist = minD; nearestOnBoundary = projPt; nearestEdge = { dx: eDX, dy: eDY }; }
-          }
-          if (wetCount === 0) { out.push(poly); continue; }
-          const elen = Math.hypot(nearestEdge.dx, nearestEdge.dy) || 1; let nx = -nearestEdge.dy / elen; let ny = nearestEdge.dx / elen; const eps = 0.8;
-          const tx = sumDx / wetCount, ty = sumDy / wetCount;
-          const pTest = new Point(nearestOnBoundary.x + nx * eps, nearestOnBoundary.y + ny * eps);
-          if (pipFast(pTest, bestMeta)) { nx = -nx; ny = -ny; }
-          const moved = poly.map(p => new Point(p.x + tx + nx * eps, p.y + ty + ny * eps));
-          out.push(moved);
-
-          // Add waterfront feature for castle elements as well (dock/post/boat)
-          if (nearestOnBoundary) {
-            if (!this.model.waterfrontBuildings) this.model.waterfrontBuildings = [];
-            const edgeLen = Math.hypot(nearestEdge.dx, nearestEdge.dy);
-            if (edgeLen > 0.5) {
-              const ux = nearestEdge.dx / edgeLen, uy = nearestEdge.dy / edgeLen;
-              // normal points into water if we flip from land normal
-              const wx = -nx, wy = -ny;
-              const mid = nearestOnBoundary;
-              const featureType = Random.int(0, 2);
-              if (featureType === 0) {
-                const w = 2.0, d = 2.4;
-                const a = new Point(mid.x - ux*w*0.5, mid.y - uy*w*0.5);
-                const b = new Point(mid.x + ux*w*0.5, mid.y + uy*w*0.5);
-                const c = new Point(b.x + wx*d, b.y + wy*d);
-                const dpt = new Point(a.x + wx*d, a.y + wy*d);
-                this.model.waterfrontBuildings.push({feature:'dock', geometry:[a,b,c,dpt]});
-              } else if (featureType === 1) {
-                const post = new Point(mid.x + wx*1.4, mid.y + wy*1.4);
-                this.model.waterfrontBuildings.push({feature:'post', geometry:post});
-              } else {
-                const boatCenter = new Point(mid.x + wx*2.0, mid.y + wy*2.0);
-                const boat = [
-                  new Point(boatCenter.x - ux*1.2,  boatCenter.y - uy*1.2),
-                  new Point(boatCenter.x + ux*1.2,  boatCenter.y + uy*1.2),
-                  new Point(boatCenter.x + ux*0.8 + wx*0.6, boatCenter.y + uy*0.8 + wy*0.6),
-                  new Point(boatCenter.x - ux*0.8 + wx*0.6, boatCenter.y - uy*0.8 + wy*0.6)
-                ];
-                this.model.waterfrontBuildings.push({feature:'boat', geometry:boat});
-              }
+    if (this.towers && this.towers.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      this.towers = this.towers.filter(tower => {
+        if (!tower || tower.length < 3) return false;
+        for (const vertex of tower) {
+          for (const water of this.model.waterBodies) {
+            if (!water || water.length < 3) continue;
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > vertex.y) !== (yj > vertex.y)) && 
+                              (vertex.x < (xj - xi) * (vertex.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
             }
+            if (inside) return false;
           }
         }
-        return out;
-      };
-
-      // 2) Adjust castle buildings and towers
-      this.geometry = adjustPolys(this.geometry);
-      this.towers = adjustPolys(this.towers);
+        return true;
+      });
     }
   }
 
@@ -2290,6 +2209,121 @@ class Market extends Ward {
 
   getLabel() {
     return 'Market';
+  }
+}
+
+class Docks extends Ward {
+  buildGeometry() {
+    this.geometry = [];
+    
+    if (!this.model.waterfrontBuildings) this.model.waterfrontBuildings = [];
+    
+    // Use getAvailable to get buildable area
+    const available = this.getAvailable();
+    if (!available || available.length < 3) {
+      this.geometry = [];
+      return;
+    }
+    
+    // Create buildings on the available area
+    this.geometry = this.createAlleys(available, 25, 0.2, 0.2, true);
+    
+    // Filter out buildings that have any vertex in water
+    if (this.geometry.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      this.geometry = this.geometry.filter(building => {
+        if (!building || building.length < 3) return false;
+        
+        // Check if ANY vertex is in water
+        for (const vertex of building) {
+          for (const water of this.model.waterBodies) {
+            if (!water || water.length < 3) continue;
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > vertex.y) !== (yj > vertex.y)) && 
+                              (vertex.x < (xj - xi) * (vertex.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
+            }
+            if (inside) return false; // Any vertex in water - reject building
+          }
+        }
+        return true; // No vertices in water
+      });
+    }
+    
+    // Generate waterfront features for buildings near water
+    for (const building of this.geometry) {
+      const bCenter = building.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+      bCenter.x /= building.length;
+      bCenter.y /= building.length;
+      
+      let nearestWaterDist = Infinity;
+      let nearestWaterEdge = null;
+      let nearestOnBoundary = null;
+      
+      if (this.model.waterBodies) {
+        for (const water of this.model.waterBodies) {
+          if (water && water.length >= 3) {
+            for (let i = 0; i < water.length; i++) {
+              const a = water[i];
+              const b = water[(i + 1) % water.length];
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const len = Math.sqrt(dx*dx + dy*dy);
+              if (len < 0.1) continue;
+              
+              const t = Math.max(0, Math.min(1, ((bCenter.x-a.x)*dx + (bCenter.y-a.y)*dy)/(len*len)));
+              const closest = new Point(a.x + t*dx, a.y + t*dy);
+              const dist = Math.sqrt((bCenter.x-closest.x)**2 + (bCenter.y-closest.y)**2);
+              
+              if (dist < nearestWaterDist) {
+                nearestWaterDist = dist;
+                nearestWaterEdge = {dx, dy};
+                nearestOnBoundary = closest;
+              }
+            }
+          }
+        }
+      }
+      
+      if (nearestOnBoundary && nearestWaterDist < 12) {
+        const edgeLen = Math.hypot(nearestWaterEdge.dx, nearestWaterEdge.dy);
+        if (edgeLen > 0.5) {
+          const ux = nearestWaterEdge.dx / edgeLen;
+          const uy = nearestWaterEdge.dy / edgeLen;
+          const nx = (bCenter.x - nearestOnBoundary.x) / nearestWaterDist;
+          const ny = (bCenter.y - nearestOnBoundary.y) / nearestWaterDist;
+          const wx = -nx, wy = -ny;
+          const mid = nearestOnBoundary;
+          
+          const featureType = Random.int(0, 3);
+          if (featureType === 0) {
+            const w = 2.0, d = 2.4;
+            const a = new Point(mid.x - ux*w*0.5, mid.y - uy*w*0.5);
+            const b = new Point(mid.x + ux*w*0.5, mid.y + uy*w*0.5);
+            const c = new Point(b.x + wx*d, b.y + wy*d);
+            const dpt = new Point(a.x + wx*d, a.y + wy*d);
+            this.model.waterfrontBuildings.push({feature:'dock', geometry:[a,b,c,dpt]});
+          } else if (featureType === 1) {
+            const post = new Point(mid.x + wx*1.4, mid.y + wy*1.4);
+            this.model.waterfrontBuildings.push({feature:'post', geometry:post});
+          } else if (featureType === 2) {
+            const boatCenter = new Point(mid.x + wx*2.0, mid.y + wy*2.0);
+            const boat = [
+              new Point(boatCenter.x - ux*1.2, boatCenter.y - uy*1.2),
+              new Point(boatCenter.x + ux*1.2, boatCenter.y + uy*1.2),
+              new Point(boatCenter.x + ux*0.8 + wx*0.6, boatCenter.y + uy*0.8 + wy*0.6),
+              new Point(boatCenter.x - ux*0.8 + wx*0.6, boatCenter.y - uy*0.8 + wy*0.6)
+            ];
+            this.model.waterfrontBuildings.push({feature:'boat', geometry:boat});
+          }
+        }
+      }
+    }
+  }
+
+  getLabel() {
+    return 'Docks';
   }
 }
 
@@ -2542,7 +2576,7 @@ class Slum extends Ward {
         if (tooCloseToStreet) break;
       }
       
-      if (tooCloseToAlley || tooCloseToStreet || !this.pointInPolygon(bCenter, wardShape)) {
+      if (tooCloseToAlley || tooCloseToStreet || !this.isPointInPolygon(bCenter, wardShape)) {
         continue;
       }
       
@@ -2594,20 +2628,6 @@ class Slum extends Ward {
       if (dist < threshold) return true;
     }
     return false;
-  }
-  
-  pointInPolygon(pt, poly) {
-    // Ray casting algorithm to check if point is inside polygon
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i].x, yi = poly[i].y;
-      const xj = poly[j].x, yj = poly[j].y;
-      
-      const intersect = ((yi > pt.y) !== (yj > pt.y))
-        && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
-      if (intersect) inside = !inside;
-    }
-    return inside;
   }
   
   createAlleysRespectingNetwork(polygon, minSq, gridChaos, sizeChaos, split, alleys, depth = 0) {
@@ -2838,6 +2858,29 @@ class Farm extends Ward {
     }
     this.buildings = [housingClipped];
     this.geometry = [housingClipped];
+    
+    // Filter out farm building if any vertex is in water
+    if (this.geometry.length > 0 && Array.isArray(this.model.waterBodies) && this.model.waterBodies.length > 0) {
+      this.geometry = this.geometry.filter(building => {
+        if (!building || building.length < 3) return false;
+        for (const vertex of building) {
+          for (const water of this.model.waterBodies) {
+            if (!water || water.length < 3) continue;
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > vertex.y) !== (yj > vertex.y)) && 
+                              (vertex.x < (xj - xi) * (vertex.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
+            }
+            if (inside) return false;
+          }
+        }
+        return true;
+      });
+      this.buildings = this.geometry;
+    }
     
     // Create subplot (the whole farm field)
     this.subPlots = [land];
@@ -3085,30 +3128,31 @@ class CityModel {
     // Find first patch outside city walls that doesn't overlap water
     const outsidePatches = this.patches.filter(p => !p.withinCity && !p.waterbody);
     
+    // Helper: check if point is in any water body
+    const pointInWater = (pt) => {
+      if (!Array.isArray(this.waterBodies) || this.waterBodies.length === 0) return false;
+      for (const water of this.waterBodies) {
+        if (!water || water.length < 3) continue;
+        let inside = false;
+        for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+          const xi = water[i].x, yi = water[i].y;
+          const xj = water[j].x, yj = water[j].y;
+          const intersect = ((yi > pt.y) !== (yj > pt.y))
+              && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+        if (inside) return true;
+      }
+      return false;
+    };
+    
     for (const patch of outsidePatches) {
-      // Check if this patch overlaps with water bodies
+      // Check if ANY vertex of this patch overlaps with water bodies
       let overlapsWater = false;
-      if (Array.isArray(this.waterBodies) && this.waterBodies.length > 0) {
-        const patchCenter = patch.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-        patchCenter.x /= patch.shape.length;
-        patchCenter.y /= patch.shape.length;
-        
-        for (const water of this.waterBodies) {
-          if (water && water.length >= 3) {
-            // Check if patch center is in water
-            let inside = false;
-            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
-              const xi = water[i].x, yi = water[i].y;
-              const xj = water[j].x, yj = water[j].y;
-              const intersect = ((yi > patchCenter.y) !== (yj > patchCenter.y))
-                  && (patchCenter.x < (xj - xi) * (patchCenter.y - yi) / (yj - yi) + xi);
-              if (intersect) inside = !inside;
-            }
-            if (inside) {
-              overlapsWater = true;
-              break;
-            }
-          }
+      for (const vertex of patch.shape) {
+        if (pointInWater(vertex)) {
+          overlapsWater = true;
+          break;
         }
       }
       
@@ -5023,6 +5067,7 @@ class CityModel {
     
     for (const patch of this.patches) {
       if (patch.waterbody) continue;
+      if (patch.ward instanceof Docks) continue; // Skip docks - no streets through them
       if (!patch.shape || patch.shape.length < 3) continue;
       
       for (let i = 0; i < patch.shape.length; i++) {
@@ -5212,18 +5257,21 @@ class CityModel {
     // Helper function to check if patch overlaps with water
     const overlapsWater = (patch) => {
       if (!Array.isArray(this.waterBodies) || this.waterBodies.length === 0) return false;
-      const patchCenter = Polygon.centroid(patch.shape);
-      for (const water of this.waterBodies) {
-        if (water && water.length >= 3) {
-          let inside = false;
-          for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
-            const xi = water[i].x, yi = water[i].y;
-            const xj = water[j].x, yj = water[j].y;
-            const intersect = ((yi > patchCenter.y) !== (yj > patchCenter.y))
-                && (patchCenter.x < (xj - xi) * (patchCenter.y - yi) / (yj - yi) + xi);
-            if (intersect) inside = !inside;
+      
+      // Check if ANY corner of the patch is in water
+      for (const corner of patch.shape) {
+        for (const water of this.waterBodies) {
+          if (water && water.length >= 3) {
+            let inside = false;
+            for (let i = 0, j = water.length - 1; i < water.length; j = i++) {
+              const xi = water[i].x, yi = water[i].y;
+              const xj = water[j].x, yj = water[j].y;
+              const intersect = ((yi > corner.y) !== (yj > corner.y))
+                  && (corner.x < (xj - xi) * (corner.y - yi) / (yj - yi) + xi);
+              if (intersect) inside = !inside;
+            }
+            if (inside) return true;
           }
-          if (inside) return true;
         }
       }
       return false;
@@ -5256,6 +5304,9 @@ class CityModel {
       if (central) central.ward = new Castle(this, central);
     }
     
+    // Track patches that overlap water for docks assignment
+    const waterOverlapPatches = [];
+    
     for (const patch of innerPatches) {
       // Skip patches that already have a ward assigned (plaza, urban castle, etc.)
       if (patch.ward) continue;
@@ -5265,7 +5316,9 @@ class CityModel {
       
       // For special ward types that shouldn't overlap water, check and skip if needed
       if ((wardType === 'market' || wardType === 'merchant' || wardType === 'patriciate' || wardType === 'military' || wardType === 'administration' || wardType === 'cathedral') && overlapsWater(patch)) {
-        console.log(`Skipping ${wardType} on water-overlapping patch`);
+        console.log(`Skipping ${wardType} on water-overlapping patch - will assign as Docks`);
+        // Track this patch for docks assignment
+        waterOverlapPatches.push(patch);
         // Skip this patch and try next - don't increment typeIndex
         typeIndex--;
         continue;
@@ -5285,6 +5338,11 @@ class CityModel {
         // All other types use standard Ward with type label
         patch.ward = new Ward(this, patch, wardType);
       }
+    }
+    
+    // Assign Docks to all water-overlapping patches
+    for (const patch of waterOverlapPatches) {
+      patch.ward = new Docks(this, patch);
     }
     
     // Calculate city radius from inner patches
@@ -6199,11 +6257,13 @@ class CityRenderer {
       ctx.closePath();
       // Subtract each castle area
       for (const patch of castles) {
-        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
-        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
-          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        if (patch.ward.citadelWall && patch.ward.citadelWall.length >= 3) {
+          ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+          for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+            ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+          }
+          ctx.closePath();
         }
-        ctx.closePath();
       }
       try { ctx.clip('evenodd'); } catch { ctx.clip(); }
     } else {
@@ -6587,7 +6647,7 @@ class CityRenderer {
     
     // Draw castle floors
     for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle && patch.ward.citadelWall && patch.ward.citadelWall.length > 0) {
+      if (patch.ward instanceof Castle && patch.ward.citadelWall && patch.ward.citadelWall.length >= 3) {
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
@@ -6633,6 +6693,8 @@ class CityRenderer {
     if (this.model.waterfrontBuildings && this.model.waterfrontBuildings.length > 0) {
       this.drawWaterfrontFeatures(ctx, this.model.waterfrontBuildings);
     }
+    
+    // Docks waterfront features are in model.waterfrontBuildings already
     
     // Draw castle buildings AFTER floor, gates, water, and bridges
     for (const patch of this.model.patches) {
@@ -6685,6 +6747,63 @@ class CityRenderer {
       this.labelBBoxes = [];
       for (const district of this.model.districts) {
         this.drawDistrictLabel(ctx, district);
+      }
+    }
+    
+    ctx.restore();
+  }
+  
+  drawDocksWaterside(ctx, watersideObjects) {
+    const safeScale = Math.max(1e-3, this.scale || 1);
+    ctx.save();
+    
+    for (const obj of watersideObjects) {
+      if (obj.type === 'pier' && Array.isArray(obj.shape)) {
+        // Draw pier as wooden planks with detail
+        ctx.fillStyle = '#8B7355';
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(obj.shape[0].x, obj.shape[0].y);
+        for (let i = 1; i < obj.shape.length; i++) {
+          ctx.lineTo(obj.shape[i].x, obj.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        
+        // Add plank lines for detail
+        ctx.strokeStyle = '#6B5335';
+        ctx.lineWidth = Math.max(0.15 / safeScale, 0.2);
+        const plankSpacing = 1.5;
+        const pierDx = obj.shape[1].x - obj.shape[0].x;
+        const pierDy = obj.shape[1].y - obj.shape[0].y;
+        const pierLen = Math.sqrt(pierDx * pierDx + pierDy * pierDy);
+        const numPlanks = Math.floor(pierLen / plankSpacing);
+        for (let i = 1; i < numPlanks; i++) {
+          const t = i / numPlanks;
+          const x1 = obj.shape[0].x + (obj.shape[1].x - obj.shape[0].x) * t;
+          const y1 = obj.shape[0].y + (obj.shape[1].y - obj.shape[0].y) * t;
+          const x2 = obj.shape[3].x + (obj.shape[2].x - obj.shape[3].x) * t;
+          const y2 = obj.shape[3].y + (obj.shape[2].y - obj.shape[3].y) * t;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+      } else if (obj.type === 'boat' && Array.isArray(obj.shape)) {
+        // Draw boat with simple hull shape
+        ctx.fillStyle = '#8B6F47';
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(obj.shape[0].x, obj.shape[0].y);
+        for (let i = 1; i < obj.shape.length; i++) {
+          ctx.lineTo(obj.shape[i].x, obj.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
       }
     }
     
@@ -7083,11 +7202,13 @@ class CityRenderer {
       ctx.closePath();
       // Subtract each castle area
       for (const patch of castles) {
-        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
-        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
-          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        if (patch.ward.citadelWall && patch.ward.citadelWall.length >= 3) {
+          ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+          for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+            ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+          }
+          ctx.closePath();
         }
-        ctx.closePath();
       }
       try { ctx.clip('evenodd'); } catch { ctx.clip(); }
     }
@@ -7098,13 +7219,15 @@ class CityRenderer {
     ctx.lineJoin = 'round';
 
     // Draw the complete wall (now clipped to outside castles)
-    ctx.beginPath();
-    ctx.moveTo(wall[0].x, wall[0].y);
-    for (let i = 1; i < wall.length; i++) {
-      ctx.lineTo(wall[i].x, wall[i].y);
+    if (wall && wall.length >= 3) {
+      ctx.beginPath();
+      ctx.moveTo(wall[0].x, wall[0].y);
+      for (let i = 1; i < wall.length; i++) {
+        ctx.lineTo(wall[i].x, wall[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
     }
-    ctx.closePath();
-    ctx.stroke();
     
     ctx.restore();
 
@@ -7139,15 +7262,17 @@ class CityRenderer {
         ctx.clip();
 
         // Stroke along wall path inside water to carve a gap
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = wallThickness * 2.2; // slightly larger than wall
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(wall[0].x, wall[0].y);
-        for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
-        ctx.closePath();
-        ctx.stroke();
+        if (wall && wall.length >= 3) {
+          ctx.strokeStyle = 'black';
+          ctx.lineWidth = wallThickness * 2.2; // slightly larger than wall
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          ctx.moveTo(wall[0].x, wall[0].y);
+          for (let i = 1; i < wall.length; i++) ctx.lineTo(wall[i].x, wall[i].y);
+          ctx.closePath();
+          ctx.stroke();
+        }
         ctx.restore();
       }
     }
@@ -7244,7 +7369,7 @@ class CityRenderer {
   }
 
   drawCitadelWall(ctx, ward) {
-    if (!ward.citadelWall) return;
+    if (!ward.citadelWall || ward.citadelWall.length < 3) return;
     
     const wall = ward.citadelWall;
     const wallThickness = ((StateManager.wallThickness || 2) * 1.5) / this.scale;
@@ -7619,7 +7744,7 @@ class CityRenderer {
     ctx.save();
     
     // Unified water colour - all water uses same colour for seamless blending
-    const waterColour = '#A8D5E2';
+    const waterColour = '#a8d5e26c';
     
     // Draw all water bodies with FILL ONLY (no strokes) for seamless blending
     for (let wi = 0; wi < waterBodies.length; wi++) {
