@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Medieval Fantasy City Generator</title>
   <style>
+    /* ==== COLOR VARIABLES ==== */
+    :root {
+      --tab-inactive-bg: #8b7355;
+      --tab-inactive-text: #a57b7b;
+      --tab-active-bg: rgba(255, 255, 255, 0.95);
+      --tab-active-text: #2b2416;
+      --tab-border: #4a3d2c;
+      --tab-hover-bg: #6b5842;
+    }
+    /* ========================= */
+    
     html, body {
       margin: 0;
       padding: 0;
@@ -89,6 +100,46 @@
       color: #4a3d2c;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+    }
+    .tab-nav {
+      display: flex;
+      gap: 4px;
+      margin: -15px -15px 15px -15px;
+      border-bottom: 2px solid var(--tab-border);
+    }
+    .tab-button {
+      flex: 1;
+      background: var(--tab-inactive-bg);
+      border: none;
+      padding: 10px 15px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--tab-inactive-text);
+      font-weight: 600;
+      border-top: 2px solid transparent;
+      transition: background 0.2s;
+    }
+    .tab-button:first-child {
+      border-radius: 4px 0 0 0;
+    }
+    .tab-button:last-child {
+      border-radius: 0 4px 0 0;
+    }
+    .tab-button:hover {
+      background: var(--tab-hover-bg);
+    }
+    .tab-button.active {
+      background: var(--tab-active-bg);
+      color: var(--tab-active-text);
+      border-top-color: var(--tab-border);
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
     }
     .controls label {
       display: block;
@@ -187,8 +238,12 @@
 
         var controls = document.createElement('div');
         controls.className = 'controls';
-        controls.innerHTML = '<h3>City Generator</h3>' +
-          '<button class="controls-toggle" id="toggle-controls">◀</button>' +
+        controls.innerHTML = '<button class="controls-toggle" id="toggle-controls">◀</button>' +
+          '<div class="tab-nav">' +
+          '<button class="tab-button active" data-tab="settings">Settings</button>' +
+          '<button class="tab-button" data-tab="colours">Colours</button>' +
+          '</div>' +
+          '<div class="tab-content active" id="tab-settings">' +
           '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
           '<input type="range" id="zoom-slider" min="0.2" max="3" step="0.1" value="1.0"></label>' +
           '<label>Size: <span id="size-value">' + StateManager.size + '</span><br>' +
@@ -241,7 +296,12 @@
           '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
-          '<button id="export-btn">Export PNG</button></div>';
+          '<button id="export-btn">Export PNG</button></div>' +
+          '</div>' + // End tab-settings
+          '<div class="tab-content" id="tab-colours">' +
+          '<h3>Palette Options</h3>' +
+          '<p style="color:#666;font-size:0.8rem;margin:10px 0;">Colour customization options will be added here.</p>' +
+          '</div>'; // End tab-colours
         container.appendChild(controls);
 
         // Add floating export button
@@ -496,6 +556,21 @@
 
         // Make generator globally accessible for flythrough
         window.generator = generator;
+
+        // Tab switching
+        document.querySelectorAll('.tab-button').forEach(button => {
+          button.addEventListener('click', function() {
+            const targetTab = this.getAttribute('data-tab');
+            
+            // Remove active from all tabs and buttons
+            document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            // Add active to clicked button and corresponding content
+            this.classList.add('active');
+            document.getElementById('tab-' + targetTab).classList.add('active');
+          });
+        });
 
         // Toggle controls collapse
         document.getElementById('toggle-controls').addEventListener('click', function() {

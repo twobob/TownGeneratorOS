@@ -7171,11 +7171,59 @@ class CityModel {
 // Rendering
 // ============================================================================
 
+// ============================================================================
+// COLOR PALETTE - Easy to customize colors
+// ============================================================================
 class Palette {
-  static paper = '#F3EDE2';
-  static light = '#C9B896';  // Definite tan/brown - no pink possible
-  static dark = '#2B2416';
-  static roof = '#8B7355'; // Brown roof colour
+  // Base colors
+  static paper = '#F3EDE2';           // Background/paper color
+  static light = '#C9B896';           // Light tan/brown for buildings and terrain
+  static dark = '#2B2416';            // Dark brown for outlines and details
+  static roof = '#8B7355';            // Brown roof color
+  
+  // Terrain colors
+  static terrainBase = 'hsl(85, 30%, 80%)';  // Light greenish base terrain
+  static farmGreen = '#a7ae89ff';            // Light green for farms outside city
+  
+  // Water colors
+  static water = '#4A7C59';           // Dark green for water
+  static waterDeep = '#3A6B49';       // Deeper water color
+  static sand = '#E8DCC8';            // Sand/beach color
+  
+  // Building/structure colors
+  static castleFloor = '#9a9a9a';     // Grey castle floor
+  static towerBrown = '#8B7355';      // Tower color
+  static woodDark = '#6B5335';        // Dark wood
+  static woodMedium = '#8B6F47';      // Medium wood
+  static woodBrown = '#5C4033';       // Dark brown wood
+  static plankBrown = '#6B4423';      // Wood plank color
+  
+  // District/ward colors
+  static plaza = '#D4C5A0';           // Plaza tan/sand
+  static citadel = '#C8BCA8';         // Citadel tan/grey
+  static park = '#C8D4A8';            // Park light green
+  static defaultWard = '#B8B0A0';     // Default ward color
+  static insideCell = '#E8DCC8';      // Light tan/beige for inside cells
+  
+  // Tree colors
+  static tree = '#4A7C59';            // Dark green for trees
+  
+  // Label/text colors
+  static labelOutline = '#FFFFFF';    // White outline for labels
+  static labelText = '#5A3312';       // Dark brown label text
+  
+  // District type colors (for labels/highlighting)
+  static districtColors = {
+    'castle': '#FFD700',              // Gold
+    'cathedral': '#4169E1',           // Royal blue
+    'temple': '#9370DB',              // Medium purple
+    'market': '#faf0e4ff',            // Light beige
+    'slum': '#535151',                // Dim grey
+    'craft': '#D2691E',               // Chocolate
+    'merchant': '#CD853F',            // Peru
+    'park': '#90EE90',                // Light green
+    'farm': '#9ACD32'                 // Yellow green
+  };
 }
 
 class CityRenderer {
@@ -7263,7 +7311,7 @@ class CityRenderer {
       this.formalMap.cityTitle = cityData.cityTitle;
     }
     
-    // Draw using view architecture (wards, walls, roads, buildings, etc.)
+    // Draw using view architecture (everything)
     this.formalMap.draw(ctx, {
       showBuildings: StateManager.showBuildings,
       showFarms: StateManager.showBuildings,
@@ -7276,6 +7324,38 @@ class CityRenderer {
       showFocus: StateManager.showFocus || false,
       showCellOutlines: StateManager.showCellOutlines
     });
+    
+    // DRAW CASTLE BUILDINGS AND WALLS ON TOP OF EVERYTHING
+    for (const patch of this.model.patches) {
+      if (patch.ward instanceof Castle && patch.ward.citadelWall && patch.ward.citadelWall.length >= 3) {
+        ctx.save();
+        
+        // Draw castle floor
+        ctx.beginPath();
+        ctx.moveTo(patch.ward.citadelWall[0].x, patch.ward.citadelWall[0].y);
+        for (let i = 1; i < patch.ward.citadelWall.length; i++) {
+          ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = Palette.castleFloor;
+        ctx.fill();
+        
+        // Draw castle walls
+        ctx.strokeStyle = Palette.dark;
+        ctx.lineWidth = (StateManager.wallThickness || 5);
+        ctx.stroke();
+        
+        // Draw castle buildings (keep and towers)
+        if (patch.ward.geometry && patch.ward.geometry.length > 0) {
+          BuildingPainter.paint(ctx, patch.ward.geometry, Palette.roof, Palette.dark, 0.5, this.scale);
+        }
+        if (patch.ward.towers && patch.ward.towers.length > 0) {
+          BuildingPainter.paint(ctx, patch.ward.towers, Palette.roof, Palette.dark, 0.5, this.scale);
+        }
+        
+        ctx.restore();
+      }
+    }
     
     // Draw water on top of sand but under bridges/piers
     if (StateManager.showWater && this.model.waterBodies) {
@@ -7417,7 +7497,7 @@ class CityRenderer {
         ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
       }
       ctx.closePath();
-      ctx.fillStyle = '#E8DCC8'; // light tan/beige base for all inside cells (no pink)
+      ctx.fillStyle = Palette.insideCell; // light tan/beige base for all inside cells (no pink)
       ctx.fill();
     }
     
@@ -7569,6 +7649,18 @@ class CityRenderer {
         }));
       }
       
+      // Add castle towers if it's a castle
+      if (patch.ward instanceof Castle && patch.ward.towers) {
+        if (!wardData.buildings) wardData.buildings = [];
+        for (const tower of patch.ward.towers) {
+          wardData.buildings.push({
+            shape: [...tower.map(p => ({...p}))],
+            height: Random.float(12, 25),
+            type: 'tower'
+          });
+        }
+      }
+      
       // Add farm furrows if farm
       if (patch.ward instanceof Farm) {
         wardData.furrows = patch.ward.furrows || [];
@@ -7682,7 +7774,7 @@ class CityRenderer {
   
   getPatchColour(patch) {
     if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
-      return '#D4C5A0';
+      return Palette.plaza;
     } else if (patch === this.model.citadel) {
       return '#D5C8B8';
     } else if (patch.ward instanceof Farm) {
@@ -7722,7 +7814,7 @@ class CityRenderer {
     const height = this.canvas.height;
     
     // Use light brown terrain colour for background instead of white
-    ctx.fillStyle = 'hsl(85, 30%, 80%)';
+    ctx.fillStyle = Palette.terrainBase;
     ctx.fillRect(0, 0, width, height);
     
     const margin = 80;
@@ -7779,7 +7871,7 @@ class CityRenderer {
           ctx.lineTo(patch.ward.citadelWall[i].x, patch.ward.citadelWall[i].y);
         }
         ctx.closePath();
-        ctx.fillStyle = '#9a9a9a';
+        ctx.fillStyle = Palette.castleFloor;
         ctx.fill();
         ctx.restore();
       }
@@ -8052,7 +8144,7 @@ class CityRenderer {
     }
     
     // Draw filled tree crowns
-    ctx.fillStyle = '#4A7C59'; // Dark green for trees
+    ctx.fillStyle = Palette.tree; // Dark green for trees
     
     for (const tree of trees) {
       ctx.save();
@@ -8272,8 +8364,21 @@ class CityRenderer {
         const l = 80 * (1 - n) + 83 * n;
         ctx.save();
         ctx.beginPath();
-        ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
-        for (let i = 1; i < shapeToRender.length; i++) ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
+        // Use rounded corners for farms in prepass too
+        if (patch.ward instanceof Farm && shapeToRender.length >= 3) {
+          const safeScale = Math.max(1e-3, this.scale || 1);
+          const cornerRadius = 12 / safeScale;
+          ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+          for (let i = 0; i < shapeToRender.length; i++) {
+            const curr = shapeToRender[i];
+            const next = shapeToRender[(i + 1) % shapeToRender.length];
+            const nextNext = shapeToRender[(i + 2) % shapeToRender.length];
+            ctx.arcTo(next.x, next.y, nextNext.x, nextNext.y, cornerRadius);
+          }
+        } else {
+          ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+          for (let i = 1; i < shapeToRender.length; i++) ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
+        }
         ctx.closePath();
         ctx.fillStyle = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
         ctx.fill();
@@ -8315,10 +8420,10 @@ class CityRenderer {
     } else if (patch.ward instanceof Castle) {
       // Castle: skip, let terrain colour show through (castle has its own wall)
     } else if (patch === this.model.plaza || (patch.ward && patch.ward instanceof Plaza)) {
-      ctx.fillStyle = '#D4C5A0'; // More distinct tan/sand colour for central plaza
+      ctx.fillStyle = Palette.plaza; // More distinct tan/sand colour for central plaza
       ctx.fill();
     } else if (patch === this.model.citadel) {
-      ctx.fillStyle = '#C8BCA8';  // Tan/grey for citadel (no pink)
+      ctx.fillStyle = Palette.citadel;  // Tan/grey for citadel (no pink)
       ctx.fill();
     } else if (patch.ward instanceof Farm) {
       // Different pale beige/tan for each farm
@@ -8329,6 +8434,25 @@ class CityRenderer {
         patch.ward.farmColor = `hsl(${hue}, ${sat}%, ${light}%)`;
       }
       ctx.fillStyle = patch.ward.farmColor;
+      
+      // Draw farm with rounded corners
+      const safeScale = Math.max(1e-3, this.scale || 1);
+      const cornerRadius = 12 / safeScale;
+      
+      ctx.beginPath();
+      if (shapeToRender.length >= 3) {
+        // Start at first point
+        ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+        
+        // Draw each edge with rounded corner at the end vertex
+        for (let i = 0; i < shapeToRender.length; i++) {
+          const curr = shapeToRender[i];
+          const next = shapeToRender[(i + 1) % shapeToRender.length];
+          const nextNext = shapeToRender[(i + 2) % shapeToRender.length];
+          ctx.arcTo(next.x, next.y, nextNext.x, nextNext.y, cornerRadius);
+        }
+        ctx.closePath();
+      }
       ctx.fill();
     } else {
       // Standard inside ward: no additional fill here; beige base (drawn elsewhere)
@@ -9736,11 +9860,32 @@ class FarmPainter {
     ctx.lineWidth = strokeWidth;
     
     for (const plot of farm.subPlots || []) {
+      if (plot.length < 3) continue;
+      
+      // Draw with rounded corners using arcTo
+      const cornerRadius = 8 / scale;
+      
       ctx.beginPath();
-      ctx.moveTo(plot[0].x, plot[0].y);
-      for (let i = 1; i < plot.length; i++) {
-        ctx.lineTo(plot[i].x, plot[i].y);
+      
+      // Start from a point offset from the first vertex
+      const p0 = plot[plot.length - 1];
+      const p1 = plot[0];
+      const p2 = plot[1];
+      
+      // Move to a point between last and first vertex
+      const startX = p1.x + (p0.x - p1.x) * 0.5;
+      const startY = p1.y + (p0.y - p1.y) * 0.5;
+      ctx.moveTo(startX, startY);
+      
+      // Draw each edge with rounded corner at the end vertex
+      for (let i = 0; i < plot.length; i++) {
+        const prev = plot[i];
+        const curr = plot[(i + 1) % plot.length];
+        const next = plot[(i + 2) % plot.length];
+        
+        ctx.arcTo(curr.x, curr.y, next.x, next.y, cornerRadius);
       }
+      
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
@@ -10003,9 +10148,25 @@ class PatchView {
     ctx.lineWidth = showCellOutlines ? 0.5 : 0;
     
     ctx.beginPath();
-    ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
-    for (let i = 1; i < shapeToRender.length; i++) {
-      ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
+    // Use rounded corners for farms
+    if (patch.type === 'farm' && shapeToRender.length >= 3) {
+      const cornerRadius = 12;
+      
+      // Start at first point
+      ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+      
+      // Draw each edge with rounded corner at the end vertex
+      for (let i = 0; i < shapeToRender.length; i++) {
+        const curr = shapeToRender[i];
+        const next = shapeToRender[(i + 1) % shapeToRender.length];
+        const nextNext = shapeToRender[(i + 2) % shapeToRender.length];
+        ctx.arcTo(next.x, next.y, nextNext.x, nextNext.y, cornerRadius);
+      }
+    } else {
+      ctx.moveTo(shapeToRender[0].x, shapeToRender[0].y);
+      for (let i = 1; i < shapeToRender.length; i++) {
+        ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
+      }
     }
     ctx.closePath();
     ctx.fill();
@@ -10217,12 +10378,14 @@ class WallsView {
     
     const showTowers = options.showTowers !== false;
     const showGates = options.showGates !== false;
+    const skipCitadelWalls = options.skipCitadelWalls === true;
+    const onlyCitadelWalls = options.onlyCitadelWalls === true;
     
     ctx.save();
     
     // Separate city walls from citadel walls
-    const cityWalls = this.walls.filter(w => !w.isCitadel);
-    const citadelWalls = this.walls.filter(w => w.isCitadel);
+    const cityWalls = onlyCitadelWalls ? [] : this.walls.filter(w => !w.isCitadel);
+    const citadelWalls = skipCitadelWalls ? [] : this.walls.filter(w => w.isCitadel);
     
     // Clip to OUTSIDE castle areas before drawing city walls
     if (citadelWalls.length > 0) {
@@ -10467,9 +10630,9 @@ class FormalMap {
       this.roads.draw(ctx, options);
     }
     
-    // 3. Draw walls
+    // 3. Draw city walls only (skip citadel walls for now)
     if (this.walls && options.showWalls !== false) {
-      this.walls.draw(ctx, options);
+      this.walls.draw(ctx, {...options, skipCitadelWalls: true});
     }
     
     // 4. Draw focus overlay (if any)
