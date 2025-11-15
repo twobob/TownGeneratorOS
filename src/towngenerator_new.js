@@ -3840,6 +3840,7 @@ class CityModel {
     this.streets = [];
     this.gates = [];
     this.bridges = [];
+    this.cityTitle = `The City of ${Namer.cityName() || 'Unnamed'}`;
 
     let coastRetry = 0;
     const maxCoastRetry = 20;
@@ -3922,20 +3923,45 @@ class CityModel {
     // Check that we have at least some inner city patches
     const innerPatches = this.patches.filter(p => p.withinCity);
     
+    // Compute total wall length (0 means effectively no city walls)
+    let wallPerimeter = 0;
+    if (Array.isArray(this.borderShape) && this.borderShape.length >= 2) {
+      for (let i = 0; i < this.borderShape.length; i++) {
+        const a = this.borderShape[i];
+        const b = this.borderShape[(i + 1) % this.borderShape.length];
+        wallPerimeter += Point.distance(a, b, 'validateCity/wallPerimeter');
+      }
+    }
+    
     // Check that at least some patches have wards assigned
     const patchesWithWards = this.patches.filter(p => p.ward);
     if (patchesWithWards.length === 0) {
       errors.push('No wards created (no patches have ward assignments)');
     }
 
-    // If there are no inner patches but wards exist, signal that we should retry coast placement
-    if (innerPatches.length === 0 && patchesWithWards.length > 0) {
-      console.warn('City validation: no inner city patches, but wards exist – triggering coastal retry');
+    // Check plaza presence if requested
+    const plazaRequested = this.plazaNeeded;
+    const plazaExists = !!this.plaza;
+
+    const minWallPerimeter = this.wallsNeeded ? 100 : 0;
+    const wallsTooShort = wallPerimeter < minWallPerimeter;
+    const innerMissingButWards = (innerPatches.length === 0 && patchesWithWards.length > 0);
+    const plazaMissing = plazaRequested && !plazaExists;
+
+    // If critical city structure is missing, signal that we should retry coast placement
+    if (innerMissingButWards || wallsTooShort || plazaMissing) {
+      if (wallsTooShort) {
+        console.warn('City validation: wall perimeter near zero – triggering coastal retry');
+      } else if (innerMissingButWards) {
+        console.warn(wallPerimeter + ' City validation: no inner city patches, but wards exist – triggering coastal retry');
+      } else if (plazaMissing) {
+        console.warn('City validation: plaza requested but not placed – triggering coastal retry');
+      }
       throw new Error('RETRY_COAST');
     } else if (innerPatches.length === 0) {
       errors.push('No inner city patches (all patches outside walls)');
     }
-    
+    // console.log(`City validation: ${innerPatches.length} inner patches, ${patchesWithWards.length} patches with wards, wall perimeter=${wallPerimeter.toFixed(2)}`);
     // Check border shape exists for walled cities
     if (this.wallsNeeded && (!this.borderShape || this.borderShape.length < 3)) {
       errors.push('Walls requested but border shape invalid');
@@ -6761,7 +6787,8 @@ class CityModel {
     if (!StateManager.showRegionNames) return;
 
     const innerPatches = this.patches.filter(p => p.withinCity && !p.waterbody && p.ward);
-    if (innerPatches.length === 0) return;
+    const outerPatches = this.patches.filter(p => !p.withinCity && !p.waterbody && p.ward);
+    if (innerPatches.length === 0 && outerPatches.length === 0) return;
 
     const used = new Set();
     const targetDistricts = Math.max(3, Math.floor(innerPatches.length / 4));
@@ -6796,6 +6823,47 @@ class CityModel {
 
       if (district.patches.length >= 2) {
         this.districts.push(district);
+      }
+    }
+
+    // Create simple quadrant-style districts for outer patches (surrounding region)
+    if (outerPatches.length > 0) {
+      const center = new Point(0, 0);
+      const quadrants = [
+        { name: null, patches: [] , minAngle: Math.PI/4, maxAngle: 3*Math.PI/4 },   // north
+        { name: null, patches: [] , minAngle: -Math.PI/4, maxAngle: Math.PI/4 },    // east
+        { name: null, patches: [] , minAngle: -3*Math.PI/4, maxAngle: -Math.PI/4 }, // south
+        { name: null, patches: [] , minAngle: 3*Math.PI/4, maxAngle: -3*Math.PI/4 } // west (wrap)
+      ];
+
+      for (const patch of outerPatches) {
+        const c = Polygon.centroid(patch.shape);
+        const angle = Math.atan2(c.y - center.y, c.x - center.x);
+        for (const q of quadrants) {
+          if (q.minAngle < q.maxAngle) {
+            if (angle >= q.minAngle && angle < q.maxAngle) {
+              q.patches.push(patch);
+              break;
+            }
+          } else {
+            // wrap-around quadrant (West)
+            if (angle >= q.minAngle || angle < q.maxAngle) {
+              q.patches.push(patch);
+              break;
+            }
+          }
+        }
+      }
+
+      for (const q of quadrants) {
+        if (q.patches.length >= 2) {
+          const dir = q === quadrants[0] ? 'South'
+                    : q === quadrants[1] ? 'East'
+                    : q === quadrants[2] ? 'North'
+                    : 'West';
+          const name = Namer.districtName('castle', dir);
+          this.districts.push({ patches: q.patches, name });
+        }
       }
     }
   }
@@ -7147,15 +7215,15 @@ class CityRenderer {
     ctx.fillStyle = 'hsl(85, 30%, 80%)';
     ctx.fillRect(0, 0, width, height);
     
-    const margin = 40;
+    const margin = 80;
     const baseScale = Math.min(
       (width - margin * 2) / (this.model.cityRadius * 2),
       (height - margin * 2) / (this.model.cityRadius * 2)
     );
     
-    const scale = baseScale * (StateManager.zoom || 1.0);
+    const scale = baseScale * (StateManager.zoom || 0.9);
     this.scale = scale;
-    
+
     ctx.save();
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
     ctx.scale(scale, scale);
@@ -7171,6 +7239,7 @@ class CityRenderer {
     
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
+    cityData.cityTitle = this.model.cityTitle;
     
     // Create or update FormalMap (recreate if settings changed)
     if (!this.formalMap || this.settingsChanged()) {
@@ -7190,6 +7259,8 @@ class CityRenderer {
       if (this.formalMap.walls) {
         this.formalMap.walls.settings = this.formalMap.settings;
       }
+      // Update city title when reusing existing FormalMap
+      this.formalMap.cityTitle = cityData.cityTitle;
     }
     
     // Draw using view architecture (wards, walls, roads, buildings, etc.)
@@ -7253,12 +7324,45 @@ class CityRenderer {
     // Draw district names with curved text (reset collision store each frame)
     if (StateManager.showRegionNames && this.model.districts) {
       this.labelBBoxes = [];
+      
+      // Add a large exclusion zone at the top of the world view where title will be
+      // This is a rough approximation - title area in world coordinates
+      const titleWorldTop = (-height / 2 - StateManager.cameraOffsetY) / scale;
+      const titleWorldHeight = 100 / scale; // roughly 100px in screen space
+      this.labelBBoxes.push({
+        x: -1000, // wide enough to span any view
+        y: titleWorldTop,
+        w: 2000,
+        h: titleWorldHeight
+      });
+      
       for (const district of this.model.districts) {
         this.drawDistrictLabel(ctx, district);
       }
     }
-    
+
     ctx.restore();
+
+    // Draw city title last on top in screen space
+    const title = this.formalMap ? this.formalMap.cityTitle : null;
+    if (title) {
+      ctx.save();
+      const titleY = 20;
+      const titleX = width / 2;
+      const fontSize = 56;
+      
+      ctx.font = `bold ${fontSize}px "IM Fell English", serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 5;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(title, titleX, titleY);
+      ctx.fillStyle = '#5A3312';
+      ctx.fillText(title, titleX, titleY);
+      ctx.restore();
+    }
   }
 
   // Draw light beige floor inside the city walls ONLY
@@ -7621,14 +7725,14 @@ class CityRenderer {
     ctx.fillStyle = 'hsl(85, 30%, 80%)';
     ctx.fillRect(0, 0, width, height);
     
-    const margin = 40;
+    const margin = 80;
     const baseScale = Math.min(
       (width - margin * 2) / (this.model.cityRadius * 2),
       (height - margin * 2) / (this.model.cityRadius * 2)
     );
     
   
-    const scale = baseScale * (StateManager.zoom || 1.0);
+    const scale = baseScale * (StateManager.zoom || 0.9);
     
     ctx.save();
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
@@ -7780,12 +7884,45 @@ class CityRenderer {
     // Draw district names with curved text (reset collision store each frame)
     if (StateManager.showRegionNames && this.model.districts) {
       this.labelBBoxes = [];
+      
+      // Add a large exclusion zone at the top of the world view where title will be
+      // This is a rough approximation - title area in world coordinates
+      const titleWorldTop = (-height / 2 - StateManager.cameraOffsetY) / scale;
+      const titleWorldHeight = 100 / scale; // roughly 100px in screen space
+      this.labelBBoxes.push({
+        x: -1000, // wide enough to span any view
+        y: titleWorldTop,
+        w: 2000,
+        h: titleWorldHeight
+      });
+      
       for (const district of this.model.districts) {
         this.drawDistrictLabel(ctx, district);
       }
     }
     
     ctx.restore();
+
+    // Draw city title last on top in screen space
+    const cityTitle = this.model ? this.model.cityTitle : null;
+    if (cityTitle) {
+      ctx.save();
+      const titleY = 20;
+      const titleX = width / 2;
+      const fontSize = 56;
+      
+      ctx.font = `bold ${fontSize}px "IM Fell English", serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 5;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(cityTitle, titleX, titleY);
+      ctx.fillStyle = '#5A3312';
+      ctx.fillText(cityTitle, titleX, titleY);
+      ctx.restore();
+    }
   }
   
   drawDocksWaterside(ctx, watersideObjects) {
@@ -10283,6 +10420,7 @@ class FormalMap {
     this.walls = null;
     this.focus = null;
     this.focusView = null;
+    this.cityTitle = city.cityTitle || null;
     
     this.initialize();
   }
