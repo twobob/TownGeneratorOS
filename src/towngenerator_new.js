@@ -309,8 +309,6 @@ class Voronoi {
     // Store the removed edges for potential visualization or analysis
     this.urquhartRemovedEdges = Array.from(edgesToRemove);
     
-    console.log('Urquhart graph: marked', edgesToRemove.size, 'longest edges from', this.triangles.length, 'triangles');
-    
     return edgesToRemove;
   }
 
@@ -541,6 +539,97 @@ class Polygon {
     centre.y /= polygon.length;
     return centre;
   }
+
+  /**
+   * Calculate compactness score (ratio of area to perimeter-based circle area)
+   * Score of 1.0 = perfect circle, lower = more elongated
+   */
+  static compactness(polygon) {
+    if (!polygon || polygon.length < 3) return 0;
+    
+    // Calculate area using shoelace formula
+    let area = 0;
+    let perimeter = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const j = (i + 1) % polygon.length;
+      const p1 = polygon[i];
+      const p2 = polygon[j];
+      area += p1.x * p2.y - p2.x * p1.y;
+      perimeter += Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    }
+    area = Math.abs(area) / 2;
+    
+    // Compactness = 4π * area / perimeter²
+    // Perfect circle = 1.0, lower values = more elongated
+    if (perimeter === 0) return 0;
+    return (4 * Math.PI * area) / (perimeter * perimeter);
+  }
+
+  /**
+   * Calculate Oriented Bounding Box (OBB) for polygon
+   * Returns {center, halfWidth, halfHeight, angle}
+   * Uses PCA to find principal axes
+   */
+  static obb(polygon) {
+    if (!polygon || polygon.length < 3) {
+      return {center: {x: 0, y: 0}, halfWidth: 0, halfHeight: 0, angle: 0};
+    }
+
+    // Calculate centroid
+    const center = Polygon.centroid(polygon);
+    
+    // Calculate covariance matrix
+    let cxx = 0, cxy = 0, cyy = 0;
+    for (const p of polygon) {
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      cxx += dx * dx;
+      cxy += dx * dy;
+      cyy += dy * dy;
+    }
+    cxx /= polygon.length;
+    cxy /= polygon.length;
+    cyy /= polygon.length;
+
+    // Find principal axis via eigen decomposition
+    // For 2x2 symmetric matrix, eigenvalues are: λ = (trace ± sqrt(trace² - 4*det)) / 2
+    const trace = cxx + cyy;
+    const det = cxx * cyy - cxy * cxy;
+    const discriminant = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+    const lambda1 = (trace + discriminant) / 2;
+    
+    // Eigenvector for lambda1: (cxy, lambda1 - cxx) or (lambda1 - cyy, cxy)
+    let angle;
+    if (Math.abs(cxy) > 1e-10) {
+      angle = Math.atan2(lambda1 - cxx, cxy);
+    } else {
+      angle = cxx > cyy ? 0 : Math.PI / 2;
+    }
+
+    // Rotate polygon to align with axes
+    const cos = Math.cos(-angle);
+    const sin = Math.sin(-angle);
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    
+    for (const p of polygon) {
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      const rx = dx * cos - dy * sin;
+      const ry = dx * sin + dy * cos;
+      minX = Math.min(minX, rx);
+      maxX = Math.max(maxX, rx);
+      minY = Math.min(minY, ry);
+      maxY = Math.max(maxY, ry);
+    }
+
+    return {
+      center: center,
+      halfWidth: (maxX - minX) / 2,
+      halfHeight: (maxY - minY) / 2,
+      angle: angle
+    };
+  }
   
   /**
    * Chaikin's corner-cutting algorithm for smooth curves
@@ -729,7 +818,7 @@ class DCELFace {
   constructor(id) {
     this.id = id;
     this.edge = null;  // one half-edge on the boundary
-    this.patch = null; // back reference to Patch
+    this.patch = null;
   }
 
   // Iterate boundary half-edges once (assumes simple polygon)
@@ -785,7 +874,7 @@ class Patch {
     this.withinWalls = false;
     this.waterbody = false;  // New property for water features
     this.ward = null;
-    this.face = null;        // DCELFace reference (built after Voronoi)
+    this.face = null;
   }
 
   static fromRegion(region) {
@@ -1125,9 +1214,7 @@ class Ward {
         }
         // else both inside -> keep nothing
       }
-      if (clipDebug && edgeClips > 0) console.log('Edge', i, 'clipped', edgeClips, 'segments, output now:', output.length);
     }
-    if (clipDebug) console.log('Final subtractPolygon output:', output.length, 'vertices');
     // Return the clipped result, or empty array if completely removed
     if (output.length < 3) return [];
     return output;
@@ -1137,7 +1224,7 @@ class Ward {
     const availableShape = this.getAvailable();
     
     if (!availableShape || availableShape.length < 3) {
-      console.warn('Ward.buildGeometry: Invalid availableShape, using original patch shape');
+      console.warn('Ward.buildGeometry: Invalid availableShape');
       this.geometry = [];
       return;
     }
@@ -1146,14 +1233,26 @@ class Ward {
     this.availableShape = availableShape;
     
     // Check lots mode early
-    // Check lots mode early - handle string values and mix mode
+    // Check lots mode early - handle string values and mix/complex modes
     let lots;
+    let complex;
+    
+    // Mix mode logic - randomly choose between normal, lots, and complex per ward
     if (StateManager.lotsMode === 'mix') {
-      lots = Random.chance(0.5); // 50% chance for lots vs normal in mix mode
+      const roll = Random.float();
+      if (roll < 0.33) {
+        lots = true;
+      } else if (roll < 0.66) {
+        complex = true;
+      }
+      // else normal mode (remaining 33%)
     } else if (StateManager.lotsMode === 'lots' || StateManager.lotsMode === true) {
       lots = true;
+    } else if (StateManager.lotsMode === 'complex') {
+      complex = true;
     } else {
       lots = false;
+      complex = false;
     }
     // If this patch borders roads, create a thin ring of buildings hugging the road first
     // SKIP in lots mode to avoid double-stacking buildings at perimeters
@@ -1216,9 +1315,10 @@ class Ward {
     }
 
 
-    // Lots mode uses MUCH smaller minimum size for tight tessellation
-    // Normal mode uses larger buildings with more organic shapes
-    const minSq = lots ? 8 : 25;
+    // Lots mode: small min size for tight tessellation
+    // Complex mode: medium size with detailed geometry
+    // Normal mode: larger buildings with organic shapes
+    const minSq = lots ? 8 : (complex ? 15 : 25);
     const gridChaos = this.model.gridChaos !== undefined ? this.model.gridChaos : 0.4;
     const sizeChaos = this.model.sizeChaos !== undefined ? this.model.sizeChaos : 0.6;
     
@@ -1480,106 +1580,913 @@ class Ward {
   }
 
   createAlleys(polygon, minSq, gridChaos, sizeChaos, split, depth = 0) {
-    const maxDepth = StateManager.lotsMode ? 12 : 10;
+    const isLots = (StateManager.lotsMode === 'lots' || StateManager.lotsMode === true);
+    const isComplex = (StateManager.lotsMode === 'complex');
+    const maxDepth = isLots ? 12 : (isComplex ? 11 : 10);
     const area0 = this.polygonArea(polygon);
+    
+    // Base case: stop if too small or max depth
     if (!polygon || polygon.length < 3 || area0 <= 0.001 || depth >= maxDepth) {
       return area0 > 0 ? [polygon] : [];
     }
-    // Find longest edge
+
+    const variance = (Random.float() + Random.float() + Random.float() + Random.float()) / 2 - 1;
+    const minAreaThreshold = minSq * Math.pow(2, Math.abs(variance) * sizeChaos);
+    
+    if (area0 < minAreaThreshold) {
+      // Area is small enough - this becomes a building lot
+      const skipChance = isLots ? 0.0 : 0.04;
+      if (Random.float() > skipChance) {
+        // Convert lot to building shape
+        const building = this.createBuildingFromLot(polygon);
+        return [building];
+      }
+      return [];
+    }
+
+    const result = this.makeCut(polygon, minSq, gridChaos, sizeChaos, split, 0);
+    
+    if (!result || result.length === 1) {
+      // Failed to cut - accept as single building if small enough
+      if (area0 < minSq * 3) {
+        const building = this.createBuildingFromLot(polygon);
+        return [building];
+      }
+      return [];
+    }
+    
+    // Recursively subdivide both halves
+    const buildings = [];
+    for (const half of result) {
+      buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, split, depth + 1));
+    }
+    
+    return buildings;
+  }
+
+  makeCut(polygon, minSq, gridChaos, sizeChaos, split, retry) {
+    // After 10 retries, give up
+    if (retry > 10) return [polygon];
+    
+    const n = polygon.length;
+    
+    let workPoly = polygon;
+    if (retry > 0) {
+      const angle = (retry / 10) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const center = Polygon.centroid(polygon);
+      workPoly = polygon.map(p => {
+        const dx = p.x - center.x;
+        const dy = p.y - center.y;
+        return new Point(
+          center.x + dx * cos - dy * sin,
+          center.y + dx * sin + dy * cos
+        );
+      });
+    }
+    
+    // Get OBB
+    const obb = Polygon.obb(workPoly);
+    const obbCorners = this.getOBBCorners(obb);
+    
+    // Get OBB edges
+    const edge1 = {x: obbCorners[1].x - obbCorners[0].x, y: obbCorners[1].y - obbCorners[0].y};
+    const edge2 = {x: obbCorners[3].x - obbCorners[0].x, y: obbCorners[3].y - obbCorners[0].y};
+    const len1 = Math.hypot(edge1.x, edge1.y);
+    const len2 = Math.hypot(edge2.x, edge2.y);
+    
+    // Choose longer edge for cutting direction
+    const longEdge = len1 > len2 ? edge1 : edge2;
+    const longLen = Math.max(len1, len2);
+    
+    longEdge.x /= longLen;
+    longEdge.y /= longLen;
+    
+    // Project centroid onto long edge
+    const centroid = Polygon.centroid(workPoly);
+    const d = {x: centroid.x - obbCorners[0].x, y: centroid.y - obbCorners[0].y};
+    let cutPos = (d.x * longEdge.x + d.y * longEdge.y);
+    
+    // Add triangular distribution randomness
+    cutPos = (cutPos + (Random.float() + Random.float() + Random.float()) / 3 * longLen) / 2;
+    
+    const cutStart = new Point(
+      obbCorners[0].x + longEdge.x * cutPos,
+      obbCorners[0].y + longEdge.y * cutPos
+    );
+    
+    const perpDir = {x: -longEdge.y, y: longEdge.x};
+    
+    // Find first intersection with polygon edges
+    let firstEdgeIdx = -1;
+    let firstIntersect = null;
+    let maxAlignment = 0;
+    
+    for (let i = 0; i < n; i++) {
+      const p1 = workPoly[i];
+      const p2 = workPoly[(i + 1) % n];
+      const edge = {x: p2.x - p1.x, y: p2.y - p1.y};
+      const edgeLen = Math.hypot(edge.x, edge.y);
+      
+      if (edgeLen < 1e-10) continue;
+      
+      const result = this.lineIntersection(
+        cutStart.x, cutStart.y, perpDir.x, perpDir.y,
+        p1.x, p1.y, edge.x, edge.y
+      );
+      
+      if (result && result.v > 0 && result.v < 1) {
+        const edgeNorm = {x: edge.x / edgeLen, y: edge.y / edgeLen};
+        const alignment = Math.abs(longEdge.x * edgeNorm.x + longEdge.y * edgeNorm.y);
+        
+        if (alignment > maxAlignment) {
+          maxAlignment = alignment;
+          firstEdgeIdx = i;
+          firstIntersect = new Point(p1.x + edge.x * result.v, p1.y + edge.y * result.v);
+        }
+      }
+    }
+    
+    if (firstEdgeIdx === -1) {
+      return this.makeCut(polygon, minSq, gridChaos, sizeChaos, split, retry + 1);
+    }
+    
+    // Find second intersection
+    let secondEdgeIdx = -1;
+    let secondIntersect = null;
+    let minDist = Infinity;
+    
+    for (let i = 0; i < n; i++) {
+      if (i === firstEdgeIdx) continue;
+      
+      const p1 = workPoly[i];
+      const p2 = workPoly[(i + 1) % n];
+      const edge = {x: p2.x - p1.x, y: p2.y - p1.y};
+      const edgeLen = Math.hypot(edge.x, edge.y);
+      
+      if (edgeLen < 1e-10) continue;
+      
+      const result = this.lineIntersection(
+        firstIntersect.x, firstIntersect.y, perpDir.x, perpDir.y,
+        p1.x, p1.y, edge.x, edge.y
+      );
+      
+      if (result && result.u > 0 && result.u < minDist && result.v > 0 && result.v < 1) {
+        minDist = result.u;
+        secondEdgeIdx = i;
+        secondIntersect = new Point(p1.x + edge.x * result.v, p1.y + edge.y * result.v);
+      }
+    }
+    
+    if (secondEdgeIdx === -1 || minDist === Infinity) {
+      return this.makeCut(polygon, minSq, gridChaos, sizeChaos, split, retry + 1);
+    }
+    
+    // Try straight cut first (if nearly perpendicular)
+    const minOffset = Math.sqrt(minSq);
+    const ratio = minOffset / minDist;
+    
+    if (ratio > 0.99) {
+      // Straight cut
+      const cutLine = [firstIntersect, secondIntersect];
+      const alleyWidth = split ? (this.model.alleyWidth || 0.6) : 0;
+      const halves = this.splitPolygon(workPoly, firstEdgeIdx, secondEdgeIdx, cutLine, alleyWidth);
+      
+      if (halves && halves.length === 2) {
+        const area1 = this.polygonArea(halves[0]);
+        const area2 = this.polygonArea(halves[1]);
+        const maxVariance = Math.max(1.0, 16 * gridChaos);
+        
+        if (Math.max(area1 / area2, area2 / area1) < 2 * maxVariance) {
+          // Rotate back if we rotated
+          if (retry > 0) {
+            const angle = -(retry / 10) * Math.PI * 2;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const center = Polygon.centroid(polygon);
+            return halves.map(half => half.map(p => {
+              const dx = p.x - center.x;
+              const dy = p.y - center.y;
+              return new Point(
+                center.x + dx * cos - dy * sin,
+                center.y + dx * sin + dy * cos
+              );
+            }));
+          }
+          return halves;
+        }
+      }
+    }
+    
+    // Three-point cut with offset
+    const offsetRatio = ratio > 0.5 ? 0.5 : ratio + (1 - 2 * ratio) * (Random.float() + Random.float() + Random.float()) / 3;
+    const midDist = minDist * offsetRatio;
+    const midPoint = new Point(
+      firstIntersect.x + perpDir.x * midDist,
+      firstIntersect.y + perpDir.y * midDist
+    );
+    
+    const cutLine = [firstIntersect, midPoint, secondIntersect];
+    const alleyWidth = split ? (this.model.alleyWidth || 0.6) : 0;
+    const halves = this.splitPolygon(workPoly, firstEdgeIdx, secondEdgeIdx, cutLine, alleyWidth);
+    
+    if (!halves || halves.length < 2) {
+      return this.makeCut(polygon, minSq, gridChaos, sizeChaos, split, retry + 1);
+    }
+    
+    // Check area balance
+    const area1 = this.polygonArea(halves[0]);
+    const area2 = this.polygonArea(halves[1]);
+    const maxVariance = Math.max(1.0, 16 * gridChaos);
+    
+    if (Math.max(area1 / area2, area2 / area1) > 2 * maxVariance) {
+      return this.makeCut(polygon, minSq, gridChaos, sizeChaos, split, retry + 1);
+    }
+    
+    // Success - rotate back if needed
+    if (retry > 0) {
+      const angle = -(retry / 10) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const center = Polygon.centroid(polygon);
+      return halves.map(half => half.map(p => {
+        const dx = p.x - center.x;
+        const dy = p.y - center.y;
+        return new Point(
+          center.x + dx * cos - dy * sin,
+          center.y + dx * sin + dy * cos
+        );
+      }));
+    }
+    
+    return halves;
+  }
+
+  simpleSubdivide(polygon, minSq, gridChaos, sizeChaos, split, depth) {
+    // Fallback: find longest edge and cut perpendicular
+    const area0 = this.polygonArea(polygon);
+    const n = polygon.length;
     let longestIdx = 0;
     let maxLength = 0;
-    for (let i = 0; i < polygon.length; i++) {
-      const p0 = polygon[i];
-      const p1 = polygon[(i + 1) % polygon.length];
-      const len = Point.distance(p0, p1);
+    
+    for (let i = 0; i < n; i++) {
+      const len = Point.distance(polygon[i], polygon[(i + 1) % n]);
       if (len > maxLength) {
         maxLength = len;
         longestIdx = i;
       }
     }
-
-    const v0 = polygon[longestIdx];
-    const v1 = polygon[(longestIdx + 1) % polygon.length];
     
-    // Split ratio with chaos
+    const v0 = polygon[longestIdx];
+    const v1 = polygon[(longestIdx + 1) % n];
+    
     const spread = 0.8 * gridChaos;
     const ratio = (1 - spread) / 2 + Random.float() * spread;
     
-    // Angle variation
     const angleSpread = Math.PI / 6 * gridChaos;
     const angleOffset = (Random.float() - 0.5) * angleSpread;
     
     const splitX = v0.x + (v1.x - v0.x) * ratio;
     const splitY = v0.y + (v1.y - v0.y) * ratio;
     
-    // Perpendicular direction with angle offset
     const dx = v1.x - v0.x;
     const dy = v1.y - v0.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 0.1) return [];
+    const len = Math.hypot(dx, dy);
+    if (len < 0.1) return area0 > 0 ? [polygon] : [];
     
     const nx = dx / len;
     const ny = dy / len;
     const perpX = -ny * Math.cos(angleOffset) - nx * Math.sin(angleOffset);
     const perpY = nx * Math.cos(angleOffset) - ny * Math.sin(angleOffset);
     
-    // Cut with alley gap
     const alleyWidth = split ? (this.model.alleyWidth || 0.6) : 0;
     const cutP1 = new Point(splitX, splitY);
     const cutP2 = new Point(splitX + perpX * 1000, splitY + perpY * 1000);
     
     const halves = this.cutPolygon(polygon, cutP1, cutP2, alleyWidth);
-    // If cut failed (returned one half equal to original), avoid infinite recursion
+    
     if (!halves || halves.length < 2) {
-      // If we cannot split, either accept as building or stop
-      if (area0 < minSq) return [polygon];
-      // As a fallback, shrink slightly and accept
-      const center = polygon.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
-      center.x/=polygon.length; center.y/=polygon.length;
-      const shrunk = polygon.map(p=>new Point(center.x+(p.x-center.x)*0.98, center.y+(p.y-center.y)*0.98));
-      return [shrunk];
+      if (area0 < minSq * 2) {
+        const inset = 0.3;
+        const center = Polygon.centroid(polygon);
+        return [polygon.map(p => new Point(
+          center.x + (p.x - center.x) * (1 - inset / 10),
+          center.y + (p.y - center.y) * (1 - inset / 10)
+        ))];
+      }
+      return [];
     }
     
     const buildings = [];
     for (const half of halves) {
-      const area = this.polygonArea(half);
-      const sizeVariation = Math.pow(2, 4 * sizeChaos * (Random.float() - 0.5));
-      if (area < minSq * sizeVariation) {
-        // Small enough - make it a building (skip some for empty lots)
-        const skipChance = StateManager.lotsMode ? 0.0 : 0.04;
-        if (Random.float() > skipChance) {
-          // Inset the building from its lot boundary to prevent overlaps
-          const inset = StateManager.lotsMode ? 0.8 : 0.3; // More inset in lots mode
-          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
-          center.x /= half.length;
-          center.y /= half.length;
-          const insetBuilding = half.map(p => new Point(
-            center.x + (p.x - center.x) * (1 - inset / 10),
-            center.y + (p.y - center.y) * (1 - inset / 10)
-          ));
-          buildings.push(insetBuilding);
-        }
+      buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, split, depth + 1));
+    }
+    return buildings;
+  }
+
+  /**
+  * Convert a lot polygon into a building shape
+  * Key: Use lot as-is if 4-sided, otherwise find LIR or simplify
+   */
+  createBuildingFromLot(lot) {
+    const area = this.polygonArea(lot);
+    if (area < 5 || lot.length < 3) return lot;
+    
+    let rect = lot;
+    
+    // If lot has more than 4 sides, simplify
+    if (lot.length > 4) {
+      // First check if we can find a good LIR
+      const lir = this.findLargestInscribedRectangle(lot);
+      if (lir && lir.length === 4 && this.polygonArea(lir) > area * 0.6) {
+        rect = lir;
       } else {
-        // Keep subdividing
-        const shouldSplit = StateManager.lotsMode ? (area > minSq * 1.25) : (area > minSq / (Random.float() * Random.float()));
-        if (shouldSplit) {
-          buildings.push(...this.createAlleys(half, minSq, gridChaos, sizeChaos, shouldSplit, depth + 1));
-        } else {
-          // Final building - apply inset
-          const inset = StateManager.lotsMode ? 0.8 : 0.3;
-          const center = half.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
-          center.x /= half.length;
-          center.y /= half.length;
-          const insetBuilding = half.map(p => new Point(
-            center.x + (p.x - center.x) * (1 - inset / 10),
-            center.y + (p.y - center.y) * (1 - inset / 10)
-          ));
-          buildings.push(insetBuilding);
+        // Try simplifying the polygon
+        rect = this.simplifyPolygon(lot);
+      }
+    }
+    
+    // If still not 4 sides, use as-is
+    if (rect.length !== 4) {
+      return this.insetPolygon(rect, 0.3);
+    }
+    
+    // Check if it's rectangular enough
+    if (!this.isRectangular(rect)) {
+      return this.insetPolygon(rect, 0.3);
+    }
+    
+    const inset = 0.4;
+    const insetRect = this.insetPolygon(rect, inset);
+    
+    const minSq = 15; // From district.alleys.minSq
+    const cellSizeParam = (minSq / 4) * 1.0;
+    const building = this.createGridBuilding(insetRect, cellSizeParam);
+    
+    return building || insetRect;
+  }
+
+  /**
+   * Simple uniform inset of polygon
+   */
+  insetPolygon(polygon, amount) {
+    // Validate input
+    for (let i = 0; i < polygon.length; i++) {
+      if (!polygon[i] || !isFinite(polygon[i].x) || !isFinite(polygon[i].y)) {
+        return polygon;
+      }
+    }
+    
+    const n = polygon.length;
+    const insets = new Array(n).fill(amount);
+    const result = this.shrinkPolygon(polygon, insets);
+    
+    // Validate output
+    if (!result || result.length < 3) {
+      return polygon;
+    }
+    
+    for (let i = 0; i < result.length; i++) {
+      if (!result[i] || !isFinite(result[i].x) || !isFinite(result[i].y)) {
+        return polygon;
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Simplify polygon by removing near-collinear points
+   */
+  simplifyPolygon(polygon) {
+    const simplified = [];
+    const n = polygon.length;
+    
+    for (let i = 0; i < n; i++) {
+      const prev = polygon[(i - 1 + n) % n];
+      const curr = polygon[i];
+      const next = polygon[(i + 1) % n];
+      
+      const v1 = {x: curr.x - prev.x, y: curr.y - prev.y};
+      const v2 = {x: next.x - curr.x, y: next.y - curr.y};
+      const len1 = Math.hypot(v1.x, v1.y);
+      const len2 = Math.hypot(v2.x, v2.y);
+      
+      if (len1 < 0.01 || len2 < 0.01) continue;
+      
+      const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+      
+      // Keep point if not collinear (dot < 0.999)
+      if (dot < 0.999) {
+        simplified.push(curr);
+      }
+    }
+    
+    return simplified.length >= 3 ? simplified : polygon;
+  }
+
+
+
+  /**
+   * Shrink polygon by offsetting edges inward
+   * @param polygon - input polygon
+   * @param insets - array of inset amounts per edge
+   */
+  shrinkPolygon(polygon, insets) {
+    const n = polygon.length;
+    if (n < 3) return polygon;
+    
+    let result = polygon.slice();
+    
+    // Process each edge from ORIGINAL polygon
+    for (let i = 0; i < n; i++) {
+      const inset = insets[i];
+      if (inset <= 0) continue;
+      
+      const p0 = polygon[i];
+      const p1 = polygon[(i + 1) % n];
+      
+      const edge = {x: p1.x - p0.x, y: p1.y - p0.y};
+      
+      let normal = {x: -edge.y, y: edge.x};
+      const len = Math.hypot(normal.x, normal.y);
+      
+      if (len < 0.001) continue;
+      
+      normal.x = (normal.x / len) * inset;
+      normal.y = (normal.y / len) * inset;
+      
+      const lineP0 = new Point(p0.x + normal.x, p0.y + normal.y);
+      const lineP1 = new Point(p1.x + normal.x, p1.y + normal.y);
+      
+      const halves = this.cutPolygon(result, lineP0, lineP1, 0);
+      
+      if (!halves || halves.length === 0) {
+        return polygon;
+      }
+      
+      // Check halves for NaN before using
+      for (let h = 0; h < halves.length; h++) {
+        const half = halves[h];
+        if (half) {
+          for (let j = 0; j < half.length; j++) {
+            if (!half[j] || !isFinite(half[j].x) || !isFinite(half[j].y)) {
+              return polygon;
+            }
+          }
+        }
+      }
+      
+      if (halves.length === 2) {
+        result = halves[0];
+      } else if (halves.length === 1) {
+        // No cut happened, polygon unchanged
+        result = halves[0];
+      }
+      
+      // Validate result
+      if (!result || result.length < 3) {
+        return polygon;
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Check if polygon is rectangular
+   */
+  isRectangular(polygon) {
+    if (polygon.length !== 4) return false;
+    
+    const area = this.polygonArea(polygon);
+    const obb = Polygon.obb(polygon);
+    const obbArea = obb.halfWidth * obb.halfHeight * 4;
+    
+    return area / obbArea > 0.75;
+  }
+
+
+
+  /**
+   * Find Largest Inscribed Rectangle aligned to one edge
+   */
+  findLargestInscribedRectangle(polygon) {
+    let bestRect = null;
+    let bestArea = 0;
+    
+    // Try each edge as the base
+    for (let edgeIdx = 0; edgeIdx < polygon.length; edgeIdx++) {
+      const rect = this.findLIRForEdge(polygon, edgeIdx);
+      if (rect) {
+        const area = this.polygonArea(rect);
+        if (area > bestArea) {
+          bestArea = area;
+          bestRect = rect;
         }
       }
     }
     
-    return buildings;
+    return bestRect;
+  }
+
+  /**
+   * Find LIR aligned to specific edge
+   */
+  findLIRForEdge(polygon, edgeIdx) {
+    const n = polygon.length;
+    const p0 = polygon[edgeIdx];
+    const p1 = polygon[(edgeIdx + 1) % n];
+    
+    // Edge vector and perpendicular
+    const edge = {x: p1.x - p0.x, y: p1.y - p0.y};
+    const edgeLen = Math.hypot(edge.x, edge.y);
+    if (edgeLen < 0.1) return null;
+    
+    edge.x /= edgeLen;
+    edge.y /= edgeLen;
+    const perp = {x: -edge.y, y: edge.x};
+    
+    // Rotate polygon to align edge with x-axis
+    const rotated = polygon.map(p => {
+      const dx = p.x - p0.x;
+      const dy = p.y - p0.y;
+      return new Point(
+        dx * edge.x + dy * edge.y,
+        dx * perp.x + dy * perp.y
+      );
+    });
+    
+    const r0 = rotated[edgeIdx];
+    const r1 = rotated[(edgeIdx + 1) % n];
+    const baseY = r0.y;
+    const baseX0 = r0.x;
+    const baseX1 = r1.x;
+    
+    // Find maximum perpendicular extent
+    let maxY = baseY;
+    let minY = baseY;
+    for (const rp of rotated) {
+      maxY = Math.max(maxY, rp.y);
+      minY = Math.min(minY, rp.y);
+    }
+    
+    const height = Math.max(maxY - baseY, baseY - minY);
+    if (height < 1.2) return null;
+    
+    // Simple rectangle: use full edge width and max height
+    const width = baseX1 - baseX0;
+    if (width < 1.2) return null;
+    
+    // Check which direction has more space
+    const useUpperHalf = (maxY - baseY) > (baseY - minY);
+    const rectHeight = useUpperHalf ? Math.min(height, width * 1.5) : -Math.min(height, width * 1.5);
+    
+    // Create rectangle in rotated space
+    const rectRotated = [
+      new Point(baseX0, baseY),
+      new Point(baseX1, baseY),
+      new Point(baseX1, baseY + rectHeight),
+      new Point(baseX0, baseY + rectHeight)
+    ];
+    
+    // Rotate back to original space
+    const rect = rectRotated.map(rp => new Point(
+      p0.x + rp.x * edge.x + rp.y * perp.x,
+      p0.y + rp.x * edge.y + rp.y * perp.y
+    ));
+    
+    // Verify rectangle is inside polygon
+    const rectCenter = Polygon.centroid(rect);
+    if (!this.pointInPolygon(rectCenter, polygon)) {
+      return null;
+    }
+    
+    return rect;
+  }
+
+  /**
+   * Create building shape from rectangle using grid carving
+   * @param rect - 4-point rectangle
+   * @param b - cell size parameter (minSq / 4)
+   */
+  createGridBuilding(rect, b) {
+    if (!rect || rect.length !== 4) return null;
+    
+    // Validate all points have x,y coordinates
+    for (let i = 0; i < 4; i++) {
+      if (!rect[i] || !isFinite(rect[i].x) || !isFinite(rect[i].y)) {
+        return null;
+      }
+    }
+    
+    const h = Math.sqrt(b);
+    
+    // Calculate rectangle edge lengths
+    const w0 = Point.distance(rect[0], rect[1]);
+    const w1 = Point.distance(rect[2], rect[3]);
+    const h0 = Point.distance(rect[1], rect[2]);
+    const h1 = Point.distance(rect[3], rect[0]);
+    
+    // Validate edge lengths
+    if (!isFinite(w0) || !isFinite(w1) || !isFinite(h0) || !isFinite(h1) || 
+        w0 <= 0 || w1 <= 0 || h0 <= 0 || h1 <= 0) {
+      return null;
+    }
+    
+    const gridW = Math.ceil(Math.min(w0, w1) / h);
+    const gridH = Math.ceil(Math.min(h0, h1) / h);
+    
+    if (gridW <= 1 || gridH <= 1) return null;
+    
+    // Create grid plan (which cells are filled)
+    const plan = this.createBuildingPlan(gridW, gridH);
+    
+    // Count filled cells
+    let filledCount = 0;
+    for (let i = 0; i < plan.length; i++) {
+      if (plan[i]) filledCount++;
+    }
+    
+    if (filledCount >= gridW * gridH) return null;
+    
+    // Convert plan to actual geometry
+    const grid = this.createGridCells(rect, gridW, gridH);
+    
+    const cells = [];
+    for (let i = 0; i < plan.length; i++) {
+      if (plan[i]) {
+        cells.push(grid[i]);
+      }
+    }
+    
+    if (cells.length === 0) return null;
+    
+    return this.extractCircumference(cells);
+  }
+
+  /**
+   * Create building plan (grid of filled/empty cells)
+   */
+  createBuildingPlan(w, h) {
+    // Validate inputs
+    if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0 || w > 100 || h > 100) {
+      return [];
+    }
+    
+    const total = w * h;
+    const plan = new Array(total).fill(false);
+    
+    // Start with random cell
+    let x = Math.floor(Random.float() * w);
+    let y = Math.floor(Random.float() * h);
+    plan[x + y * w] = true;
+    
+    let filled = 1;
+    let minX = x, maxX = x, minY = y, maxY = y;
+    
+    // Random walk to fill cells
+    while (filled < total) {
+      x = Math.floor(Random.float() * w);
+      y = Math.floor(Random.float() * h);
+      const idx = x + y * w;
+      
+      // Only add if adjacent to existing cell
+      if (!plan[idx]) {
+        const hasNeighbor = (
+          (x > 0 && plan[idx - 1]) ||
+          (x < w - 1 && plan[idx + 1]) ||
+          (y > 0 && plan[idx - w]) ||
+          (y < h - 1 && plan[idx + w])
+        );
+        
+        if (hasNeighbor) {
+          plan[idx] = true;
+          filled++;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+      
+      // Stop if we've reached edges or filled enough
+      if (minX === 0 || maxX === w - 1 || minY === 0 || maxY === h - 1) {
+        if (Random.chance(0.5)) break;
+      }
+    }
+    
+    return plan;
+  }
+
+  /**
+   * Create grid of cells from rectangle
+   */
+  createGridCells(rect, gridW, gridH) {
+    const cells = [];
+    
+    for (let gy = 0; gy < gridH; gy++) {
+      for (let gx = 0; gx < gridW; gx++) {
+        const u0 = gx / gridW;
+        const u1 = (gx + 1) / gridW;
+        const v0 = gy / gridH;
+        const v1 = (gy + 1) / gridH;
+        
+        // Bilinear interpolation of rectangle corners
+        const p00 = this.bilerp(rect[0], rect[1], rect[2], rect[3], u0, v0);
+        const p10 = this.bilerp(rect[0], rect[1], rect[2], rect[3], u1, v0);
+        const p11 = this.bilerp(rect[0], rect[1], rect[2], rect[3], u1, v1);
+        const p01 = this.bilerp(rect[0], rect[1], rect[2], rect[3], u0, v1);
+        
+        cells.push([p00, p10, p11, p01]);
+      }
+    }
+    
+    return cells;
+  }
+
+  bilerp(p0, p1, p2, p3, u, v) {
+    // Bilinear interpolation: (1-u)(1-v)*p0 + u(1-v)*p1 + uv*p2 + (1-u)v*p3
+    const x = (1 - u) * (1 - v) * p0.x + u * (1 - v) * p1.x + u * v * p2.x + (1 - u) * v * p3.x;
+    const y = (1 - u) * (1 - v) * p0.y + u * (1 - v) * p1.y + u * v * p2.y + (1 - u) * v * p3.y;
+    return new Point(x, y);
+  }
+
+  /**
+   * Extract circumference from cell collection
+   */
+  extractCircumference(cells) {
+    if (cells.length === 0) return [];
+    if (cells.length === 1) return cells[0];
+    
+    // Build edge list
+    const edges = [];
+    const edgeMap = new Map();
+    
+    for (const cell of cells) {
+      for (let i = 0; i < cell.length; i++) {
+        const p1 = cell[i];
+        const p2 = cell[(i + 1) % cell.length];
+        
+        // Create edge key (normalized)
+        const key = this.edgeKey(p1, p2);
+        
+        if (edgeMap.has(key)) {
+          // Edge already exists - it's internal, remove it
+          edgeMap.delete(key);
+        } else {
+          // New edge - add it
+          edgeMap.set(key, {p1, p2});
+        }
+      }
+    }
+    
+    if (edgeMap.size === 0) return cells[0];
+    
+    // Build outline by following edges
+    const outline = [];
+    const edgeArray = Array.from(edgeMap.values());
+    let current = edgeArray[0].p1;
+    outline.push(current);
+    
+    const used = new Set();
+    used.add(edgeArray[0].p1);
+    
+    while (edgeArray.length > 0) {
+      let found = false;
+      
+      for (let i = 0; i < edgeArray.length; i++) {
+        const edge = edgeArray[i];
+        
+        if (Point.distance(current, edge.p1) < 0.01) {
+          current = edge.p2;
+          if (!used.has(current)) {
+            outline.push(current);
+            used.add(current);
+          }
+          edgeArray.splice(i, 1);
+          found = true;
+          break;
+        } else if (Point.distance(current, edge.p2) < 0.01) {
+          current = edge.p1;
+          if (!used.has(current)) {
+            outline.push(current);
+            used.add(current);
+          }
+          edgeArray.splice(i, 1);
+          found = true;
+          break;
+        }
+      }
+      
+      if (!found) break;
+    }
+    
+    // Simplify collinear points
+    const simplified = [];
+    for (let i = 0; i < outline.length; i++) {
+      const prev = outline[(i - 1 + outline.length) % outline.length];
+      const curr = outline[i];
+      const next = outline[(i + 1) % outline.length];
+      
+      const v1 = {x: curr.x - prev.x, y: curr.y - prev.y};
+      const v2 = {x: next.x - curr.x, y: next.y - curr.y};
+      const len1 = Math.hypot(v1.x, v1.y);
+      const len2 = Math.hypot(v2.x, v2.y);
+      
+      if (len1 > 0.001 && len2 > 0.001) {
+        const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+        if (dot < 0.999) { // Not collinear
+          simplified.push(curr);
+        }
+      }
+    }
+    
+    return simplified.length >= 3 ? simplified : outline;
+  }
+
+  edgeKey(p1, p2) {
+    const x1 = Math.round(p1.x * 100);
+    const y1 = Math.round(p1.y * 100);
+    const x2 = Math.round(p2.x * 100);
+    const y2 = Math.round(p2.y * 100);
+    
+    if (x1 < x2 || (x1 === x2 && y1 < y2)) {
+      return `${x1},${y1}-${x2},${y2}`;
+    } else {
+      return `${x2},${y2}-${x1},${y1}`;
+    }
+  }
+
+  pointInPolygon(point, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      const intersect = ((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  getOBBCorners(obb) {
+    const center = obb.center;
+    const w = obb.halfWidth;
+    const h = obb.halfHeight;
+    const cos = Math.cos(obb.angle);
+    const sin = Math.sin(obb.angle);
+    
+    return [
+      new Point(center.x - w * cos - h * sin, center.y - w * sin + h * cos),
+      new Point(center.x + w * cos - h * sin, center.y + w * sin + h * cos),
+      new Point(center.x + w * cos + h * sin, center.y + w * sin - h * cos),
+      new Point(center.x - w * cos + h * sin, center.y - w * sin - h * cos)
+    ];
+  }
+
+  lineIntersection(x1, y1, dx1, dy1, x2, y2, dx2, dy2) {
+    const denom = dx1 * dy2 - dy1 * dx2;
+    if (Math.abs(denom) < 1e-10) return null;
+    
+    const t = ((x2 - x1) * dy2 - (y2 - y1) * dx2) / denom;
+    const u = ((x2 - x1) * dy1 - (y2 - y1) * dx1) / denom;
+    
+    return {u: t, v: u};
+  }
+
+  splitPolygon(poly, edgeIdx1, edgeIdx2, cutLine, gap) {
+    const n = poly.length;
+    const poly1 = [];
+    const poly2 = [];
+    
+    // Add vertices from edgeIdx1 to edgeIdx2
+    let i = (edgeIdx1 + 1) % n;
+    while (i !== (edgeIdx2 + 1) % n) {
+      poly1.push(poly[i]);
+      i = (i + 1) % n;
+    }
+    
+    // Add cut line in reverse
+    for (let j = cutLine.length - 1; j >= 0; j--) {
+      poly1.push(cutLine[j]);
+    }
+    
+    // Add vertices from edgeIdx2 to edgeIdx1
+    i = (edgeIdx2 + 1) % n;
+    while (i !== (edgeIdx1 + 1) % n) {
+      poly2.push(poly[i]);
+      i = (i + 1) % n;
+    }
+    
+    // Add cut line forward
+    for (let j = 0; j < cutLine.length; j++) {
+      poly2.push(cutLine[j]);
+    }
+    
+    return [poly1, poly2];
   }
 
   cutPolygon(poly, p1, p2, gap = 0) {
@@ -1624,6 +2531,11 @@ class Ward {
       p1.x + (p2.x - p1.x) * ratio2,
       p1.y + (p2.y - p1.y) * ratio2
     );
+    
+    // Validate intersection points
+    if (!isFinite(point1.x) || !isFinite(point1.y) || !isFinite(point2.x) || !isFinite(point2.y)) {
+      return [poly];
+    }
     
     // Build half1: vertices from edge1+1 to edge2, with intersection points
     const half1 = [];
@@ -1772,38 +2684,7 @@ class Ward {
     return labels[this.wardType] || '';
   }
   
-  shrinkPolygon(poly, amount) {
-    // Inset polygon - calls overridable implementation
-    if (!poly || poly.length < 3 || amount <= 0) return poly;
-    return this.shrinkPolygonImpl(poly, amount);
-  }
-  
-  shrinkPolygonImpl(poly, amount) {
-    // Default: distance-based shrinking (inset by fixed amount)
-    const center = poly.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-    center.x /= poly.length;
-    center.y /= poly.length;
-    
-    const shrunk = [];
-    for (let i = 0; i < poly.length; i++) {
-      const p = poly[i];
-      const dx = p.x - center.x;
-      const dy = p.y - center.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      
-      if (dist > amount) {
-        const factor = (dist - amount) / dist;
-        shrunk.push(new Point(
-          center.x + dx * factor,
-          center.y + dy * factor
-        ));
-      } else {
-        shrunk.push(new Point(center.x, center.y));
-      }
-    }
-    
-    return shrunk.length >= 3 ? shrunk : poly;
-  }
+
   
   isPointInPolygon(point, polygon) {
     // Ray casting algorithm for point-in-polygon test
@@ -1851,7 +2732,7 @@ class Plaza extends Ward {
 
 class Castle extends Ward {
   buildGeometry() {
-    // Citadel with defensive walls, towers, and gate
+    // Citadel with defensive walls, towers, and special keep building
     const center = this.shape.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
     center.x /= this.shape.length;
     center.y /= this.shape.length;
@@ -1912,66 +2793,58 @@ class Castle extends Ward {
     }
     this.citadelGate = gateVertex;
     
-    // Inner keep buildings - NO street constraints, build directly in available space
-    const keep = this.shrinkPolygon(innerWall, 8); // More aggressive shrink for smaller castle
+    // Inner keep buildings
+    const keep = this.shrinkPolygon(innerWall, 8);
     if (!keep || keep.length < 3) {
       this.geometry = [];
       this.towers = towers;
       return;
     }
     
-    // Create central keep building (the main fortress)
-    const centralKeep = this.shrinkPolygon(keep, 0.55); // 55% shrink = moderate central building
-    if (!centralKeep || centralKeep.length < 3) {
-      this.geometry = [];
-      this.towers = towers;
-      return;
-    }
-    const buildings = [centralKeep];
-    
-    // Add support buildings in a ring around the central keep
-    // Create two concentric polygons for inner and outer ring boundaries
-    const keepRadius = keep.reduce((sum, p) => sum + Point.distance(center, p), 0) / keep.length;
-    const innerRingRadius = keepRadius * 0.60; // Buildings start here (outside central keep)
-    const outerRingRadius = keepRadius * 0.88; // Buildings end here (close to keep wall)
-    
-    // Create 6-8 rectangular buildings arranged radially
-    const numSupportBuildings = 6;
-    const angleStep = (Math.PI * 2) / numSupportBuildings;
-    const buildingAngularWidth = angleStep * 0.65; // Leave more gaps between buildings
-    
-    for (let i = 0; i < numSupportBuildings; i++) {
-      const centerAngle = i * angleStep;
-      const angle1 = centerAngle - buildingAngularWidth / 2;
-      const angle2 = centerAngle + buildingAngularWidth / 2;
+    // Create special central keep building similar to Cathedral
+    const buildings = [];
+    if (Random.chance(0.6)) {
+      // Option 1: Ring keep with courtyard (like Cathedral ring)
+      const outer = keep.map(p => new Point(
+        center.x + (p.x - center.x) * 0.85,
+        center.y + (p.y - center.y) * 0.85
+      ));
+      const inner = keep.map(p => new Point(
+        center.x + (p.x - center.x) * 0.50,
+        center.y + (p.y - center.y) * 0.50
+      ));
+      buildings.push(outer, inner);
       
-      // Create rectangular building as a wedge from inner to outer radius
-      const innerPt1 = new Point(
-        center.x + Math.cos(angle1) * innerRingRadius,
-        center.y + Math.sin(angle1) * innerRingRadius
-      );
-      const innerPt2 = new Point(
-        center.x + Math.cos(angle2) * innerRingRadius,
-        center.y + Math.sin(angle2) * innerRingRadius
-      );
-      const outerPt1 = new Point(
-        center.x + Math.cos(angle2) * outerRingRadius,
-        center.y + Math.sin(angle2) * outerRingRadius
-      );
-      const outerPt2 = new Point(
-        center.x + Math.cos(angle1) * outerRingRadius,
-        center.y + Math.sin(angle1) * outerRingRadius
-      );
-      
-      const building = [innerPt1, innerPt2, outerPt1, outerPt2];
-      
-      // Verify building doesn't overlap with central keep
-      const bCenter = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
-      bCenter.x /= building.length;
-      bCenter.y /= building.length;
-      
-      if (!this.isPointInPolygon(bCenter, centralKeep)) {
-        buildings.push(building);
+      // Add four corner towers to the keep
+      const keepTowerSize = towerSize * 1.2;
+      for (let i = 0; i < outer.length; i += Math.floor(outer.length / 4)) {
+        const v = outer[i];
+        const segments = 8;
+        const keepTower = [];
+        for (let j = 0; j < segments; j++) {
+          const a = (j / segments) * Math.PI * 2;
+          keepTower.push(new Point(v.x + Math.cos(a) * keepTowerSize, v.y + Math.sin(a) * keepTowerSize));
+        }
+        towers.push(keepTower);
+      }
+    } else {
+      // Option 2: Solid rectangular keep with corner towers
+      const centralKeep = this.shrinkPolygon(keep, 0.55);
+      if (centralKeep && centralKeep.length >= 3) {
+        buildings.push(centralKeep);
+        
+        // Add four prominent keep towers at corners
+        const keepTowerSize = towerSize * 1.4;
+        for (let i = 0; i < centralKeep.length; i++) {
+          const v = centralKeep[i];
+          const segments = 8;
+          const keepTower = [];
+          for (let j = 0; j < segments; j++) {
+            const a = (j / segments) * Math.PI * 2;
+            keepTower.push(new Point(v.x + Math.cos(a) * keepTowerSize, v.y + Math.sin(a) * keepTowerSize));
+          }
+          towers.push(keepTower);
+        }
       }
     }
     
@@ -2349,7 +3222,7 @@ class Park extends Ward {
       points.push(Point.interpolate(current, next, 0.5));
     }
     
-    // Apply Chaikin smoothing algorithm (3 iterations as in MFCG)
+    // Apply Chaikin smoothing algorithm 
     let smoothed = points.slice();
     const iterations = 3;
     
@@ -2967,13 +3840,36 @@ class CityModel {
     this.streets = [];
     this.gates = [];
     this.bridges = [];
-    
-    try {
-      this.build();
-      CityModel.instance = this;
-    } catch (e) {
-      console.error('City generation failed:', e);
-      CityModel.instance = null;
+
+    let coastRetry = 0;
+    const maxCoastRetry = 20;
+
+    while (coastRetry <= maxCoastRetry) {
+      try {
+        this.build();
+        this.validateCity();
+        CityModel.instance = this;
+        break;
+      } catch (e) {
+        const msg = e && e.message ? String(e.message) : '';
+        if (msg.includes('RETRY_COAST') && this.coastNeeded) {
+          coastRetry++;
+          console.warn(`City validation requested coastal retry (attempt ${coastRetry}/${maxCoastRetry})`);
+          // Push coastline further away and slightly enlarge for next build
+          this.baseWaterRadius = (this.baseWaterRadius || 20) * 1.2;
+          // Rebuild from scratch with same seed but updated coast parameters
+          this.patches = [];
+          this.inner = [];
+          this.streets = [];
+          this.gates = [];
+          this.bridges = [];
+          continue;
+        }
+
+        console.error('City generation failed:', e);
+        CityModel.instance = null;
+        break;
+      }
     }
   }
 
@@ -3012,6 +3908,50 @@ class CityModel {
     this.buildOutsideSettlements();
     // Generate named districts for region labels
     this.generateDistricts();
+  }
+
+  validateCity() {
+    // Validate that critical city components exist
+    const errors = [];
+    
+    // Check patches exist
+    if (!this.patches || this.patches.length === 0) {
+      errors.push('No patches generated');
+    }
+    
+    // Check that we have at least some inner city patches
+    const innerPatches = this.patches.filter(p => p.withinCity);
+    
+    // Check that at least some patches have wards assigned
+    const patchesWithWards = this.patches.filter(p => p.ward);
+    if (patchesWithWards.length === 0) {
+      errors.push('No wards created (no patches have ward assignments)');
+    }
+
+    // If there are no inner patches but wards exist, signal that we should retry coast placement
+    if (innerPatches.length === 0 && patchesWithWards.length > 0) {
+      console.warn('City validation: no inner city patches, but wards exist – triggering coastal retry');
+      throw new Error('RETRY_COAST');
+    } else if (innerPatches.length === 0) {
+      errors.push('No inner city patches (all patches outside walls)');
+    }
+    
+    // Check border shape exists for walled cities
+    if (this.wallsNeeded && (!this.borderShape || this.borderShape.length < 3)) {
+      errors.push('Walls requested but border shape invalid');
+    }
+    
+    // Check gates exist for walled cities
+    if (this.wallsNeeded && (!this.gates || this.gates.length === 0)) {
+      errors.push('Walls requested but no gates generated');
+    }
+    
+    // Warn if generation seems incomplete
+    if (errors.length > 0) {
+      const errorMsg = 'City validation failed: ' + errors.join(', ');
+      console.warn(errorMsg);
+      throw new Error(errorMsg);
+    }
   }
 
   buildPatches() {
@@ -3066,14 +4006,16 @@ class CityModel {
     }
     this.cityRadius = tempRadius;
     
-    // Mark waterbody cells BEFORE city assignment
+    console.log(`coastNeeded=${this.coastNeeded}, StateManager.coast=${StateManager.coast}`);
+    
+    // Single-pass waterbody marking; coastal retries are driven by validation instead
     if (this.coastNeeded) {
-      this.markWaterCells();
+      this.markWaterCells(0);
     }
     
     const waterCount = this.patches.filter(p => p.waterbody).length;
     // Key metric: waterbodies count (suppressed verbose details)
-    console.log('Waterbodies:', waterCount);
+    
     
     // Extract water body polygons BEFORE assigning citadel so we can check overlaps
     this.extractWaterBodies();
@@ -3160,7 +4102,7 @@ class CityModel {
         // Assign citadel to first non-water overlapping patch outside city walls
         this.citadel = patch;
         this.citadel.withinCity = true;
-        console.log('Citadel assigned to non-water patch');
+        
         return;
       }
     }
@@ -3265,7 +4207,7 @@ class CityModel {
    * Mark cells as waterbodies using Perlin noise and distance field
    * 
    */
-  markWaterCells() {
+  markWaterCells(retryAttempt = 0) {
     // Simple fractal noise function
     const noise = (x, y) => {
       let value = 0;
@@ -3294,29 +4236,51 @@ class CityModel {
     const cos_a = Math.cos(angle);
     const sin_a = Math.sin(angle);
     
-    // Vary coastline size dramatically: small (1-2 patches) to huge (8-15+ patches)
-    // Use power distribution to favor variety: small, medium, large, and occasional HUGE
-    const sizeRoll = Random.float();
-    let waterRadius;
-    if (sizeRoll < 0.3) {
-      // Small: 1-3 patches
-      waterRadius = this.cityRadius * (0.15 + Random.float() * 0.25);
-    } else if (sizeRoll < 0.6) {
-      // Medium: 3-6 patches
-      waterRadius = this.cityRadius * (0.4 + Random.float() * 0.3);
-    } else if (sizeRoll < 0.85) {
-      // Large: 6-10 patches
-      waterRadius = this.cityRadius * (0.7 + Random.float() * 0.4);
-    } else {
-      // HUGE: 10-20+ patches (massive coastline)
-      waterRadius = this.cityRadius * (1.1 + Random.float() * 0.6);
+    // On first attempt, roll a base coastline size and cache it.
+    // All retries grow from this base so radius only ever increases.
+    if (!this.baseWaterRadius) {
+      const sizeRoll = Random.float();
+      if (sizeRoll < 0.3) {
+        // Small: 1-3 patches
+        this.baseWaterRadius = this.cityRadius * (0.15 + Random.float() * 0.25);
+      } else if (sizeRoll < 0.6) {
+        // Medium: 3-6 patches
+        this.baseWaterRadius = this.cityRadius * (0.4 + Random.float() * 0.3);
+      } else if (sizeRoll < 0.85) {
+        // Large: 6-10 patches
+        this.baseWaterRadius = this.cityRadius * (0.7 + Random.float() * 0.4);
+      } else {
+        // HUGE: 10-20+ patches (massive coastline)
+        this.baseWaterRadius = this.cityRadius * (1.1 + Random.float() * 0.6);
+      }
+
+      // Enforce a minimum coastline radius so tiny blobs don't appear
+      if (this.baseWaterRadius < 20) {
+        this.baseWaterRadius = 20;
+      }
+    }
+
+    // Push water further from center on each retry attempt, and make it noticeably bigger
+    // Radius grows linearly with attempt index so you can see it in logs/visuals
+    const retryOffset = retryAttempt * 0.3;           // Each retry pushes 30% further
+    const retrySizeIncrease = retryAttempt * 0.5;     // Each retry makes it 50% bigger
+    let waterRadius = this.baseWaterRadius * (1.0 + retrySizeIncrease);
+
+    // Clamp to a sane maximum so it doesn't explode to infinity
+    const MAX_COAST_RADIUS = 15000;
+    if (waterRadius > MAX_COAST_RADIUS) {
+      waterRadius = MAX_COAST_RADIUS;
     }
     
-    const waterOffsetDist = this.cityRadius * (0.3 + Random.float() * 0.4);
+    const waterOffsetDist = this.cityRadius * (0.3 + Random.float() * 0.4 + retryOffset);
     const waterCenter = new Point(
       Math.cos(angle) * waterOffsetDist,
       Math.sin(angle) * waterOffsetDist
     );
+    
+    if (retryAttempt > 0) {
+      console.log(`Water placement attempt ${retryAttempt}: offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x radius), waterRadius=${waterRadius.toFixed(1)}, angle=${(angle * 180 / Math.PI).toFixed(1)}°`);
+    }
     
     // Mark cells as waterbodies based on distance and noise
     for (const patch of this.patches) {
@@ -3541,10 +4505,44 @@ class CityModel {
     if (this.wallsNeeded && this.borderShape.length > 0) {
       const numGates = 2 + Random.int(0, 3);
       const validBorder = this.borderShape.filter(v => v && v.x !== undefined && v.y !== undefined);
+      
+      // Score each vertex: prefer far from water, higher score = drier
+      const scoredBorder = validBorder.map(v => {
+        let minWaterDist = Infinity;
+        if (this.waterBodies && this.waterBodies.length > 0) {
+          for (const waterBody of this.waterBodies) {
+            // Check if inside water
+            if (this.isPointInPolygon(v, waterBody)) {
+              minWaterDist = -1000; // heavily penalize underwater
+              break;
+            }
+            // Distance to nearest water edge
+            for (let i = 0; i < waterBody.length; i++) {
+              const a = waterBody[i];
+              const b = waterBody[(i + 1) % waterBody.length];
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const len2 = dx*dx + dy*dy || 1e-6;
+              const t = Math.max(0, Math.min(1, ((v.x - a.x)*dx + (v.y - a.y)*dy) / len2));
+              const px = a.x + t*dx, py = a.y + t*dy;
+              const dist = Math.hypot(v.x - px, v.y - py);
+              if (dist < minWaterDist) minWaterDist = dist;
+            }
+          }
+        }
+        return { vertex: v, score: minWaterDist };
+      });
+      
+      // Filter out negative scores (underwater), sort by descending score
+      const dryBorder = scoredBorder.filter(s => s.score > 0).sort((a, b) => b.score - a.score);
+      
+      // Pick gates from top half of driest vertices
+      const candidates = dryBorder.length > 0 ? dryBorder.slice(0, Math.max(10, Math.floor(dryBorder.length * 0.5))) : scoredBorder;
+      
       for (let i = 0; i < numGates; i++) {
-        if (validBorder.length === 0) break;
-        const idx = Random.int(0, validBorder.length);
-        this.gates.push(validBorder[idx]);
+        if (candidates.length === 0) break;
+        const idx = Random.int(0, candidates.length);
+        this.gates.push(candidates[idx].vertex);
+        candidates.splice(idx, 1); // remove to avoid duplicates
       }
       
       // Apply smoothing to wall shape, preserving gate positions AND water edge vertices
@@ -3721,7 +4719,7 @@ class CityModel {
     const result = Polygon.smooth(waterPoly, null, smoothPasses);
     
     // Key metric: river/canal polygon built
-    console.log('Water polygon built:', this.riverType, 'points:', waterPoly.length, 'smoothPasses:', smoothPasses);
+    
     
     this.waterBodies.push(result);
     this.waterBodyTypes.push(this.riverType);
@@ -3822,8 +4820,6 @@ class CityModel {
         if (path && path.length > 1) {
           this.streets.push(path);
           // console.log('Added street with', path.length, 'points');
-        } else {
-          console.warn('Failed to find path from gate to target');
         }
       }
     }
@@ -3858,6 +4854,14 @@ class CityModel {
         extendedGraph.get(v1).edges.set(v0, dist);
       }
     }
+    
+    // Track used edges to prevent road overlap
+    const usedEdges = new Set();
+    const edgeKey = (a, b) => {
+      const ax = Math.round(a.x * 100), ay = Math.round(a.y * 100);
+      const bx = Math.round(b.x * 100), by = Math.round(b.y * 100);
+      return ax < bx || (ax === bx && ay < by) ? `${ax},${ay}-${bx},${by}` : `${bx},${by}-${ax},${ay}`;
+    };
     
     // For each gate (real or virtual), pathfind outward to a far point
     for (const gate of roadStartPoints) {
@@ -3900,8 +4904,21 @@ class CityModel {
       }
       
       if (bestTarget) {
-        // Find path using the extended graph
-        let path = this.findPath(extendedGraph, gate, bestTarget);
+        // Create modified graph excluding used edges
+        const availableGraph = new Map();
+        for (const [vertex, node] of extendedGraph.entries()) {
+          const availableEdges = new Map();
+          for (const [neighbor, cost] of node.edges.entries()) {
+            const key = edgeKey(vertex, neighbor);
+            if (!usedEdges.has(key)) {
+              availableEdges.set(neighbor, cost);
+            }
+          }
+          availableGraph.set(vertex, {edges: availableEdges});
+        }
+        
+        // Find path using the available graph
+        let path = this.findPath(availableGraph, gate, bestTarget);
         
         if (path && path.length > 1) {
           // Filter out any points that move back toward center (0,0)
@@ -3921,6 +4938,11 @@ class CityModel {
           }
           
           if (filteredPath.length > 1) {
+            // Mark edges as used
+            for (let i = 0; i < filteredPath.length - 1; i++) {
+              const key = edgeKey(filteredPath[i], filteredPath[i + 1]);
+              usedEdges.add(key);
+            }
             this.exteriorRoads.push(filteredPath);
           }
         }
@@ -4255,7 +5277,6 @@ class CityModel {
               
               // For CANALS: find perpendicular crossing (shortest straight path across)
               if (waterType === 'canal') {
-                console.log('CANAL BRIDGE (single-seg): Entry at', entry, 'Exit at', exit);
                 // Find the canal edge closest to the entry point
                 let closestEdgeDist = Infinity;
                 let closestEdgeStart = null;
@@ -4309,12 +5330,12 @@ class CityModel {
                   // Use the first crossing in either direction (opposite shore)
                   if (crossings1.length > 0 && crossings1[0].t > 0.01) {
                     finalExit = crossings1[0].point;
-                    console.log('  Using perpendicular exit (dir1):', finalExit);
+                    
                   } else if (crossings2.length > 0 && crossings2[0].t > 0.01) {
                     finalExit = crossings2[0].point;
-                    console.log('  Using perpendicular exit (dir2):', finalExit);
+                    
                   } else {
-                    console.log('  No perpendicular crossing found, keeping original');
+                    
                   }
                 }
               }
@@ -4345,7 +5366,7 @@ class CityModel {
               
               // For CANALS: find perpendicular crossing (shortest straight path across)
               if (waterType === 'canal') {
-                console.log('CANAL BRIDGE: Entry at', entryPoint, 'Exit at', exitPoint);
+                
                 // Find the two closest canal edges to the entry point
                 let closestEdgeDist = Infinity;
                 let closestEdgeStart = null;
@@ -4399,12 +5420,12 @@ class CityModel {
                   // Use the first crossing in either direction (opposite shore)
                   if (crossings1.length > 0 && crossings1[0].t > 0.01) {
                     finalExit = crossings1[0].point;
-                    console.log('  Using perpendicular exit (dir1):', finalExit);
+                    
                   } else if (crossings2.length > 0 && crossings2[0].t > 0.01) {
                     finalExit = crossings2[0].point;
-                    console.log('  Using perpendicular exit (dir2):', finalExit);
+                    
                   } else {
-                    console.log('  No perpendicular crossing found, keeping original');
+                    
                   }
                 }
               }
@@ -4667,7 +5688,7 @@ class CityModel {
       }
     }
     // Summary: number of bridges created
-    console.log('Bridges built:', totalCrossings);
+    
   }
   
   // Ensure at least one bridge crosses major rivers that split the city
@@ -4737,8 +5758,8 @@ class CityModel {
           const cityCenterX = (cityMinX + cityMaxX) / 2;
           const cityCenterY = (cityMinY + cityMaxY) / 2;
           
-          console.log('  City bounds: X', cityMinX.toFixed(1), 'to', cityMaxX.toFixed(1), 'Y', cityMinY.toFixed(1), 'to', cityMaxY.toFixed(1));
-          console.log('  Canal polygon points:', water.map(p => '(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ')').join(', '));
+          
+          
           
           // Robust orientation-based scan across canal within city
           const waterMinX = Math.min(...water.map(p => p.x));
@@ -4914,7 +5935,7 @@ class CityModel {
       }
     }
     if (forced > 0) {
-      console.log('Forced bridges:', forced);
+      
     }
   }
   
@@ -5008,8 +6029,6 @@ class CityModel {
         piersAdded++;
       }
     }
-    
-    console.log('Piers built:', this.piers.length);
   }
   
   // Tag DCEL edges that run along streets/exterior roads
@@ -5110,7 +6129,6 @@ class CityModel {
       }
     }
     
-    console.log('Topology nodes:', graph.size);
     return graph;
   }
   
@@ -5141,7 +6159,7 @@ class CityModel {
     }
     
     if (!closestStart || !closestEnd) {
-      console.log('Could not find closest vertices in graph');
+      
       return null;
     }
     
@@ -5316,7 +6334,6 @@ class CityModel {
       
       // For special ward types that shouldn't overlap water, check and skip if needed
       if ((wardType === 'market' || wardType === 'merchant' || wardType === 'patriciate' || wardType === 'military' || wardType === 'administration' || wardType === 'cathedral') && overlapsWater(patch)) {
-        console.log(`Skipping ${wardType} on water-overlapping patch - will assign as Docks`);
         // Track this patch for docks assignment
         waterOverlapPatches.push(patch);
         // Skip this patch and try next - don't increment typeIndex
@@ -5325,8 +6342,6 @@ class CityModel {
       }
       
       if (wardType === 'cathedral') {
-        const patchCenter = Polygon.centroid(patch.shape);
-        console.log(`Placing cathedral at (${patchCenter.x.toFixed(1)}, ${patchCenter.y.toFixed(1)}), overlapsWater=${overlapsWater(patch)}`);
         patch.ward = new Cathedral(this, patch);
       } else if (wardType === 'market') {
         patch.ward = new Market(this, patch);
@@ -6104,6 +7119,10 @@ class CityRenderer {
     this.globalTrees = null;
 
 
+    // Cached sand pattern used for shoreline rendering so texture is stable while panning
+    this.sandPattern = null;
+
+
     // District label bounding boxes for collision avoidance (reset every render pass)
     this.labelBBoxes = [];
   }
@@ -6141,9 +7160,14 @@ class CityRenderer {
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
     ctx.scale(scale, scale);
 
-    // Terrain + city floor base layers (behind wards/buildings)
+    // Terrain + city floor base layers (behind everything)
     this.drawOutsideTerrain(ctx);
     this.drawCityFloor(ctx);
+
+    // Sand: drawn above floor, below everything else
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawSand(ctx, this.model.waterBodies);
+    }
     
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
@@ -6168,7 +7192,7 @@ class CityRenderer {
       }
     }
     
-    // Draw using view architecture
+    // Draw using view architecture (wards, walls, roads, buildings, etc.)
     this.formalMap.draw(ctx, {
       showBuildings: StateManager.showBuildings,
       showFarms: StateManager.showBuildings,
@@ -6182,17 +7206,17 @@ class CityRenderer {
       showCellOutlines: StateManager.showCellOutlines
     });
     
-    // Draw water bodies AFTER walls/wards so they appear on top
+    // Draw water on top of sand but under bridges/piers
     if (StateManager.showWater && this.model.waterBodies) {
-      this.drawWaterBodies(ctx, this.model.waterBodies);
+      this.drawWater(ctx, this.model.waterBodies);
     }
-
-    // Draw bridges on top of water/roads
+    
+    // Draw bridges on top of water
     if (this.model.bridges && this.model.bridges.length > 0) {
       this.drawBridges(ctx, this.model.bridges);
     }
     
-    // Draw piers
+    // Draw piers on top of water
     if (this.model.piers && this.model.piers.length > 0) {
       this.drawPiers(ctx, this.model.piers);
     }
@@ -6621,6 +7645,11 @@ class CityRenderer {
       this.drawPatch(ctx, patch);
     }
     
+    // Draw sand early (after patch floor colors, under walls/buildings)
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawSand(ctx, this.model.waterBodies);
+    }
+    
     if (this.model.wallsNeeded && this.model.borderShape && this.model.borderShape.length > 0) {
       this.drawWall(ctx, this.model.borderShape);
     }
@@ -6633,15 +7662,6 @@ class CityRenderer {
     if (this.model.exteriorRoads) {
       for (const road of this.model.exteriorRoads) {
         this.drawExteriorRoad(ctx, road);
-      }
-    }
-    
-    for (const patch of this.model.patches) {
-      // Draw ward geometry (buildings), clipping inside/outside depending on patch.withinCity
-      // Skip castle buildings here, draw them later
-      if (patch.ward && patch.ward.geometry && !(patch.ward instanceof Castle)) {
-        const wardColourTint = this.getWardColourTint(patch.ward);
-        this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity, wardColourTint);
       }
     }
     
@@ -6674,19 +7694,29 @@ class CityRenderer {
       this.drawGate(ctx, gate);
     }
     
-    // Draw water bodies if enabled
-    if (StateManager.showWater && this.model.waterBodies) {
-      this.drawWaterBodies(ctx, this.model.waterBodies);
-    }
-
     // Draw piers before bridges
     if (this.model.piers && this.model.piers.length > 0) {
       this.drawPiers(ctx, this.model.piers);
     }
 
-    // Draw bridges on top of water/roads
+    // Draw piers before water
+    if (this.model.piers && this.model.piers.length > 0) {
+      this.drawPiers(ctx, this.model.piers);
+    }
+    
+    // Draw water on top of sand/walls/streets but under bridges
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawWater(ctx, this.model.waterBodies);
+    }
+    
+    // Draw bridges on top of water
     if (this.model.bridges && this.model.bridges.length > 0) {
       this.drawBridges(ctx, this.model.bridges);
+    }
+    
+    // Draw piers on top of water
+    if (this.model.piers && this.model.piers.length > 0) {
+      this.drawPiers(ctx, this.model.piers);
     }
     
     // Draw waterfront features
@@ -6696,12 +7726,17 @@ class CityRenderer {
     
     // Docks waterfront features are in model.waterfrontBuildings already
     
-    // Draw castle buildings AFTER floor, gates, water, and bridges
+    // Draw ALL buildings AFTER water (including castle and regular ward buildings)
     for (const patch of this.model.patches) {
-      if (patch.ward instanceof Castle && patch.ward.geometry) {
+      if (patch.ward && patch.ward.geometry) {
         const wardColourTint = this.getWardColourTint(patch.ward);
-        // Use citadel wall as clip boundary, not city wall
-        this.drawBuildings(ctx, patch.ward.geometry, true, wardColourTint, patch.ward.citadelWall);
+        if (patch.ward instanceof Castle) {
+          // Use citadel wall as clip boundary for castle
+          this.drawBuildings(ctx, patch.ward.geometry, true, wardColourTint, patch.ward.citadelWall);
+        } else {
+          // Regular buildings with city wall clipping
+          this.drawBuildings(ctx, patch.ward.geometry, !!patch.withinCity, wardColourTint);
+        }
       }
     }
     
@@ -7740,21 +8775,114 @@ class CityRenderer {
     ctx.restore();
   }
   
-  drawWaterBodies(ctx, waterBodies) {
+  drawSand(ctx, waterBodies) {
+    if (!waterBodies || waterBodies.length === 0) return;
     ctx.save();
     
-    // Unified water colour - all water uses same colour for seamless blending
-    const waterColour = '#a8d5e26c';
+    const sandColour = '#d8c7a2';
+    const sandBand = 3.0;
+
+    // Lazy-build sand texture once
+    if (!this.sandPattern) {
+      const createSandTextureNumbers = (width, height) => {
+        const dataArray = new Uint8ClampedArray(width * height * 4);
+        const sandColors = [
+          [210, 180, 140],
+          [194, 178, 128],
+          [230, 210, 170],
+          [139, 115,  85]
+        ];
+        const noiseAmount = 20;
+        for (let i = 0; i < dataArray.length; i += 4) {
+          const r = Math.random();
+          let baseColor;
+          if (r < 0.70) baseColor = sandColors[0];
+          else if (r < 0.85) baseColor = sandColors[1];
+          else if (r < 0.97) baseColor = sandColors[2];
+          else baseColor = sandColors[3];
+
+          const noise = (Math.random() * noiseAmount) - (noiseAmount / 2);
+          dataArray[i    ] = baseColor[0] + noise;
+          dataArray[i + 1] = baseColor[1] + noise;
+          dataArray[i + 2] = baseColor[2] + noise;
+          dataArray[i + 3] = 255;
+        }
+        return dataArray;
+      };
+
+      const sandTexSize = 128;
+      const sandCanvas = document.createElement('canvas');
+      sandCanvas.width = sandTexSize;
+      sandCanvas.height = sandTexSize;
+      const sandCtx = sandCanvas.getContext('2d');
+      const sandImageData = sandCtx.createImageData(sandTexSize, sandTexSize);
+      sandImageData.data.set(createSandTextureNumbers(sandTexSize, sandTexSize));
+      sandCtx.putImageData(sandImageData, 0, 0);
+      this.sandPattern = ctx.createPattern(sandCanvas, 'repeat');
+      this.sandPatternTransform = new DOMMatrix().scale(0.125, 0.125);
+    }
+
+    // Draw sand bands for every water body
+    const halfBand = sandBand * 0.5;
+    ctx.fillStyle = this.sandPattern || sandColour;
+    if (this.sandPattern && this.sandPatternTransform) {
+      this.sandPattern.setTransform(this.sandPatternTransform);
+    }
+    for (let wi = 0; wi < waterBodies.length; wi++) {
+      const water = waterBodies[wi];
+      if (!water || water.length < 3) continue;
+
+      ctx.beginPath();
+      for (let i = 0; i < water.length; i++) {
+        const a = water[i];
+        const b = water[(i + 1) % water.length];
+
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const len = Math.hypot(ex, ey) || 1;
+        const nx = -ey / len;
+        const ny = ex / len;
+
+        const ax1 = a.x + nx * halfBand;
+        const ay1 = a.y + ny * halfBand;
+        const bx1 = b.x + nx * halfBand;
+        const by1 = b.y + ny * halfBand;
+
+        const ax2 = a.x - nx * halfBand;
+        const ay2 = a.y - ny * halfBand;
+        const bx2 = b.x - nx * halfBand;
+        const by2 = b.y - ny * halfBand;
+
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(bx1, by1);
+        ctx.lineTo(ax1, ay1);
+        ctx.closePath();
+
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(bx2, by2);
+        ctx.lineTo(ax2, ay2);
+        ctx.closePath();
+      }
+      ctx.fill();
+    }
     
-    // Draw all water bodies with FILL ONLY (no strokes) for seamless blending
+    ctx.restore();
+  }
+
+  drawWater(ctx, waterBodies) {
+    if (!waterBodies || waterBodies.length === 0) return;
+    ctx.save();
+    
+    const waterColour = '#9dcde2';
+
     for (let wi = 0; wi < waterBodies.length; wi++) {
       const water = waterBodies[wi];
       if (!water || water.length < 3) continue;
       
-      // Use same colour for ALL water types (coast, river, canal, pond) for consistent appearance
       ctx.fillStyle = waterColour;
       
-      // Draw water polygon with FILL ONLY (no stroke = seamless blending)
       ctx.beginPath();
       ctx.moveTo(water[0].x, water[0].y);
       for (let i = 1; i < water.length; i++) {
@@ -7762,7 +8890,6 @@ class CityRenderer {
       }
       ctx.closePath();
       ctx.fill();
-      // NO stroke() call = seamless blending where water bodies meet
     }
     
     ctx.restore();
@@ -8747,7 +9874,6 @@ class PatchView {
           ));
         }).filter(b => Array.isArray(b) && b.length > 0);
       } else {
-        // Even at gap=0, create new Point instances to avoid any reference issues
         processedBuildings = buildingShapes.map(building => 
           building.map(p => new Point(p.x, p.y))
         );
@@ -9229,7 +10355,7 @@ class StateManager {
   static streetWidth = 3.5;
   static buildingGap = 0.2;
   static showLabels = false;
-  static wallThickness = 2.0;
+  static wallThickness = 4.0;
   static showCellOutlines = false;
   static showBuildings = true;
   static showStreets = true;
@@ -9239,7 +10365,7 @@ class StateManager {
   static canal = 0;         // 1 to enable canal (independent)
   static riverType = 'none'; // back-compat: 'none' | 'river' | 'canal' | 'both'
   static riverMeander = 0.5; // 0-1: micro-meander noise intensity (0=pure sine, 1=max chaos)
-  static lotsMode = 'mix';  // Building style: 'lots', 'normal', or 'mix' - default is mix
+  static lotsMode = 'complex';  // Building style: 'lots', 'normal', 'complex' - default is complex
   static plazaChance = 0.05; // Chance of central feature in plaza
   static useViewArchitecture = false; // Toggle for view-based rendering
 
@@ -9488,7 +10614,7 @@ class TownGenerator {
     this.renderer.globalTrees = null;
     this.renderer.render();
     
-    console.log('City generated:', { seed: StateManager.seed, size: StateManager.size });
+    
   }
   
  
