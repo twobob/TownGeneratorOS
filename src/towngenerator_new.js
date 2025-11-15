@@ -8601,8 +8601,13 @@ class CityRenderer {
   drawGate(ctx, gate) {
     const safeScale = Math.max(1e-3, this.scale || 1);
     const wallThickness = (StateManager.wallThickness || 5) / safeScale;
-    const gateWidth = wallThickness * 1.6;
-    const gateHeight = wallThickness * 2.4;
+    const gateWidth = wallThickness * 1.8;
+    const gateHeight = wallThickness * 2.6;
+    const barCount = 5;
+    const barSpacing = gateWidth / (barCount + 1);
+    const barThickness = Math.max(0.4, wallThickness * 0.12);
+    const barBottom = gateHeight * 0.5;
+    const barTop = -gateHeight * 0.5;
     
     ctx.save();
     ctx.translate(gate.x, gate.y);
@@ -8611,14 +8616,31 @@ class CityRenderer {
     const angle = Math.atan2(gate.y, gate.x);
     ctx.rotate(angle);
     
-    // Draw gate opening as rectangle
+    // Draw gate opening background
     ctx.fillStyle = Palette.paper;
     ctx.fillRect(-gateWidth / 2, -gateHeight / 2, gateWidth, gateHeight);
-    
-    // Gate outline
+
+    // Draw portcullis vertical bars
     ctx.strokeStyle = Palette.dark;
-    ctx.lineWidth = Math.max(0.5, wallThickness * 0.15);
-    ctx.strokeRect(-gateWidth / 2, -gateHeight / 2, gateWidth, gateHeight);
+    ctx.lineWidth = barThickness;
+    for (let i = 1; i <= barCount; i++) {
+      const x = -gateWidth / 2 + i * barSpacing;
+      ctx.beginPath();
+      ctx.moveTo(x, barTop);
+      ctx.lineTo(x, barBottom);
+      ctx.stroke();
+    }
+
+    // Draw 2-3 horizontal bars
+    const horizCount = 3;
+    const horizSpacing = gateHeight / (horizCount + 1);
+    for (let j = 1; j <= horizCount; j++) {
+      const y = -gateHeight / 2 + j * horizSpacing;
+      ctx.beginPath();
+      ctx.moveTo(-gateWidth / 2, y);
+      ctx.lineTo(gateWidth / 2, y);
+      ctx.stroke();
+    }
     
     ctx.restore();
   }
@@ -10200,25 +10222,45 @@ class WallsView {
   drawGate(ctx, gate) {
     // Scale gate size with wall thickness
     const wallThickness = this.settings.wallThickness || 5;
-    const width = gate.width || (wallThickness * 1.6);
-    const height = gate.height || (wallThickness * 2.4);
+    const width = gate.width || (wallThickness * 1.8);
+    const height = gate.height || (wallThickness * 2.6);
+    const barCount = 5;
+    const barSpacing = width / (barCount + 1);
+    const barThickness = Math.max(0.6, wallThickness * 0.18);
+    const barTop = -height / 2;
+    const barBottom = height / 2;
     
     ctx.save();
     ctx.translate(gate.x, gate.y);
     if (gate.angle) {
       ctx.rotate(gate.angle);
     }
-    
-    // Draw gate opening
+
+    // Draw gate opening background
     ctx.fillRect(-width / 2, -height / 2, width, height);
     ctx.strokeRect(-width / 2, -height / 2, width, height);
-    
-    // Draw gate arch
-    ctx.beginPath();
-    ctx.arc(0, -height / 2, width / 2, Math.PI, 0);
-    ctx.fill();
-    ctx.stroke();
-    
+
+    // Draw portcullis vertical bars
+    ctx.lineWidth = barThickness;
+    for (let i = 1; i <= barCount; i++) {
+      const x = -width / 2 + i * barSpacing;
+      ctx.beginPath();
+      ctx.moveTo(x, barTop);
+      ctx.lineTo(x, barBottom);
+      ctx.stroke();
+    }
+
+    // Draw three horizontal bars across
+    const horizCount = 3;
+    const horizSpacing = height / (horizCount + 1);
+    for (let j = 1; j <= horizCount; j++) {
+      const y = -height / 2 + j * horizSpacing;
+      ctx.beginPath();
+      ctx.moveTo(-width / 2, y);
+      ctx.lineTo(width / 2, y);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 }
