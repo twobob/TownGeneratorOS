@@ -2299,8 +2299,11 @@ class Ward {
       // Now create complex building shape from the 4-vertex rect
       if (building.length === 4) {
         const complexBuilding = this.createComplexBuilding(building, minArea, true, null, 0.6);
-        buildings.push(complexBuilding || building);
-      } else {
+        const finalBuilding = complexBuilding || building;
+        if (finalBuilding && finalBuilding.length >= 4) {
+          buildings.push(finalBuilding);
+        }
+      } else if (building.length >= 4) {
         buildings.push(building);
       }
     }
@@ -2900,7 +2903,12 @@ class Ward {
       }
     }
     
-    return simplified.length > 0 ? simplified : outline;
+    // Ensure we have at least 4 vertices for buildings (reject triangles)
+    if (simplified.length >= 4) return simplified;
+    if (outline.length >= 4) return outline;
+    // Fallback: return null if we can't create a valid building
+    console.warn(`getBuildingCircumference: Rejected building with ${simplified.length} simplified / ${outline.length} outline vertices`);
+    return null;
   }
 
   polygonArea(poly) {
@@ -2934,7 +2942,9 @@ class Ward {
       if (Random.float() > skipChance) {
         // Convert lot to building shape
         const building = this.createBuildingFromLot(polygon);
-        return [building];
+        if (building && building.length >= 4) {
+          return [building];
+        }
       }
       return [];
     }
@@ -2945,7 +2955,9 @@ class Ward {
       // Failed to cut - accept as single building if small enough
       if (area0 < minSq * 3) {
         const building = this.createBuildingFromLot(polygon);
-        return [building];
+        if (building && building.length >= 4) {
+          return [building];
+        }
       }
       return [];
     }
@@ -3226,7 +3238,7 @@ class Ward {
    */
   createBuildingFromLot(lot) {
     const area = this.polygonArea(lot);
-    if (area < 5 || lot.length < 3) return lot;
+    if (area < 5 || lot.length < 4) return lot; // Changed from < 3 to < 4 to reject triangles
     
     let rect = lot;
     
@@ -3242,14 +3254,16 @@ class Ward {
       }
     }
     
-    // If still not 4 sides, use as-is
+    // If still not 4 sides, use as-is (but ensure not triangle)
     if (rect.length !== 4) {
-      return this.insetPolygon(rect, 0.3);
+      const inset = this.insetPolygon(rect, 0.3);
+      return (inset && inset.length >= 4) ? inset : rect;
     }
     
     // Check if it's rectangular enough
     if (!this.isRectangular(rect)) {
-      return this.insetPolygon(rect, 0.3);
+      const inset = this.insetPolygon(rect, 0.3);
+      return (inset && inset.length >= 4) ? inset : rect;
     }
     
     const inset = 0.4;
@@ -3259,7 +3273,9 @@ class Ward {
     const cellSizeParam = (minSq / 4) * 1.0;
     const building = this.createGridBuilding(insetRect, cellSizeParam);
     
-    return building || insetRect;
+    // Ensure final result has at least 4 vertices
+    const result = building || insetRect;
+    return (result && result.length >= 4) ? result : lot;
   }
 
   /**
@@ -3747,7 +3763,12 @@ class Ward {
       }
     }
     
-    return simplified.length >= 3 ? simplified : outline;
+    // Ensure we have at least 4 vertices for buildings (reject triangles)
+    if (simplified.length >= 4) return simplified;
+    if (outline.length >= 4) return outline;
+    // Fallback: return null if we can't create a valid building
+    console.warn(`extractCircumference: Rejected building with ${simplified.length} simplified / ${outline.length} outline vertices`);
+    return null;
   }
 
   edgeKey(p1, p2) {
@@ -4753,6 +4774,9 @@ class Slum extends Ward {
     
     // Filter buildings using hierarchical street/alley proximity
     for (const building of allBuildings) {
+      // Skip invalid buildings (triangles or degenerate polygons)
+      if (!building || building.length < 4) continue;
+      
       const bCenter = building.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
       bCenter.x /= building.length;
       bCenter.y /= building.length;
@@ -4963,7 +4987,7 @@ class Slum extends Ward {
               if (tooClose) break;
             }
           }
-          if (!tooClose) buildings.push(half);
+          if (!tooClose && half.length >= 4) buildings.push(half);
         }
       } else {
         const shouldSplit = StateManager.lotsMode ? (area > minSq * 1.25) : (area > minSq / (Random.float() * Random.float()));
@@ -4988,7 +5012,7 @@ class Slum extends Ward {
               if (tooClose) break;
             }
           }
-          if (!tooClose) buildings.push(half);
+          if (!tooClose && half.length >= 4) buildings.push(half);
         }
       }
     }
@@ -8578,7 +8602,114 @@ class Palette {
     'park': '#90EE90',                // Light green
     'farm': '#9ACD32'                 // Yellow green
   };
+  
+  /**
+   * Apply tinting effect to a color
+   * @param {string} colorHex - Base color in hex format
+   * @param {string} method - Tinting method: 'spectrum', 'brightness', 'overlay'
+   * @param {number} strength - Strength of effect (0-100)
+   * @param {number} weathering - Weathering variation (0-100)
+   * @returns {string} Tinted color in hex format
+   */
+  static applyTinting(colorHex, method = 'spectrum', strength = 0, weathering = 0) {
+    if (!colorHex || strength === 0) return colorHex;
+    
+    // Parse hex color
+    const hex = colorHex.replace('#', '');
+    let r = parseInt(hex.substr(0, 2), 16);
+    let g = parseInt(hex.substr(2, 2), 16);
+    let b = parseInt(hex.substr(4, 2), 16);
+    
+    // Apply weathering first (random variation)
+    if (weathering > 0) {
+      const variance = (Random.float() - 0.5) * (weathering / 100) * 0.3;
+      const factor = Math.pow(2, variance);
+      r = Math.min(255, Math.max(0, Math.floor(r * factor)));
+      g = Math.min(255, Math.max(0, Math.floor(g * factor)));
+      b = Math.min(255, Math.max(0, Math.floor(b * factor)));
+    }
+    
+    const s = strength / 100;
+    
+    if (method === 'spectrum') {
+      // Spectrum: Shift hue around color wheel
+      const hsl = this.rgbToHsl(r, g, b);
+      hsl.h = (hsl.h + s * 0.3) % 1.0; // Shift hue by up to 30%
+      const rgb = this.hslToRgb(hsl.h, hsl.s, hsl.l);
+      r = rgb.r; g = rgb.g; b = rgb.b;
+    } else if (method === 'brightness') {
+      // Brightness: Adjust lightness
+      const hsl = this.rgbToHsl(r, g, b);
+      hsl.l = Math.max(0, Math.min(1, hsl.l + (s - 0.5) * 0.4));
+      const rgb = this.hslToRgb(hsl.h, hsl.s, hsl.l);
+      r = rgb.r; g = rgb.g; b = rgb.b;
+    } else if (method === 'overlay') {
+      // Overlay: Mix with a warm overlay color
+      const overlayR = 255, overlayG = 220, overlayB = 180; // Warm sepia tone
+      r = Math.floor(r * (1 - s) + overlayR * s);
+      g = Math.floor(g * (1 - s) + overlayG * s);
+      b = Math.floor(b * (1 - s) + overlayB * s);
+    }
+    
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+  
+  /**
+   * Convert RGB to HSL
+   */
+  static rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    
+    if (max === min) {
+      h = s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    return { h, s, l };
+  }
+  
+  /**
+   * Convert HSL to RGB
+   */
+  static hslToRgb(h, s, l) {
+    let r, g, b;
+    
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+      };
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1/3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1/3);
+    }
+    
+    return {
+      r: Math.round(r * 255),
+      g: Math.round(g * 255),
+      b: Math.round(b * 255)
+    };
+  }
 }
+
+// Expose Palette globally for color customization
+window.Palette = Palette;
 
 class CityRenderer {
   constructor(canvas, model) {
@@ -9835,7 +9966,8 @@ class CityRenderer {
 
     const gates = this.model.gates || [];
     const safeScale = Math.max(1e-3, this.scale || 1);
-    const wallThickness = (StateManager.wallThickness || 2) / safeScale;
+    const lineScale = StateManager.thinLines ? 0.6 : 1.0;
+    const wallThickness = ((StateManager.wallThickness || 2) / safeScale) * lineScale;
 
     ctx.save();
     
@@ -10100,8 +10232,9 @@ class CityRenderer {
       ctx.lineTo(street[i].x, street[i].y);
     }
     
+    const lineScale = StateManager.thinLines ? 0.6 : 1.0;
     ctx.strokeStyle = Palette.light + '80';
-    ctx.lineWidth = (StateManager.streetWidth || 2.0) / this.scale;
+    ctx.lineWidth = ((StateManager.streetWidth || 2.0) / this.scale) * lineScale;
     ctx.stroke();
   }
 
@@ -11008,13 +11141,35 @@ class BuildingPainter {
    * @param {string} wardColourTint - Optional ward colour for subtle tinting (hex colour)
    */
   static paint(ctx, buildings, roofColour, outlineColour, raised = 0.5, scale = 1, wardColourTint = null) {
-    const strokeWidth = 0.5 / scale;
+    // Filter out invalid buildings (triangles or degenerate polygons)
+    const invalidCount = buildings.filter(b => !b || b.length < 4).length;
+    if (invalidCount > 0) {
+      console.warn(`BuildingPainter: Filtered out ${invalidCount} buildings with < 4 vertices`);
+    }
+    const validBuildings = buildings.filter(b => b && b.length >= 4);
+    if (validBuildings.length === 0) return;
+    
+    // Apply thin lines: 3D walls thinnest, building outlines moderately thin
+    const lineScale = StateManager.thinLines ? 0.5 : 1.0;
+    const wallLineScale = StateManager.thinLines ? 0.3 : 1.0;
+    const wallStrokeWidth = (0.5 / scale) * wallLineScale;
+    const buildingStrokeWidth = (0.5 / scale) * lineScale;
     let wallOffset = 0;
 
     // Blend base roof colour with ward tint if provided (25% tint for better visibility)
     let baseRoofColour = roofColour;
-    if (wardColourTint) {
+    if (wardColourTint && StateManager.tintDistricts) {
       baseRoofColour = this.blendColours(roofColour, wardColourTint, 0.25);
+    }
+    
+    // Apply color tinting if configured
+    if (StateManager.tintStrength > 0) {
+      baseRoofColour = Palette.applyTinting(
+        baseRoofColour,
+        StateManager.tintMethod,
+        StateManager.tintStrength,
+        0 // No weathering here, applied per-building below
+      );
     }
     
     // Draw 3D walls if raised
@@ -11022,7 +11177,7 @@ class BuildingPainter {
       wallOffset = -1.2 * raised;
       const wallColour = Palette.dark;
       
-      for (const building of buildings) {
+      for (const building of validBuildings) {
         // Find vertical edges for wall drawing
         let wallSegment = null;
         
@@ -11039,28 +11194,31 @@ class BuildingPainter {
             }
           } else if (wallSegment) {
             // End wall segment and draw it
-            this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, strokeWidth);
+            this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, wallStrokeWidth);
             wallSegment = null;
           }
         }
         
         // Draw final segment if exists
         if (wallSegment) {
-          this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, strokeWidth);
+          this.drawWallSegment(ctx, wallSegment, wallOffset, wallColour, outlineColour, wallStrokeWidth);
         }
       }
     }
     
     // Draw roofs with slight colour variation
-    for (const building of buildings) {
-      // Add slight random variation to roof colour
-      const weathering = 0.1;
+    for (const building of validBuildings) {
+      // Add weathering variation to roof colour
+      let weatheringAmount = 0.1;
+      if (StateManager.weatheredRoofs && StateManager.tintWeathering > 0) {
+        weatheringAmount = StateManager.tintWeathering / 100;
+      }
       const variance = (Random.float() + Random.float() + Random.float()) / 3 * 2 - 1;
-      const variedRoof = this.scaleColour(baseRoofColour, Math.pow(2, variance * weathering));
+      const variedRoof = this.scaleColour(baseRoofColour, Math.pow(2, variance * weatheringAmount));
       
       ctx.fillStyle = variedRoof;
       ctx.strokeStyle = outlineColour;
-      ctx.lineWidth = strokeWidth;
+      ctx.lineWidth = buildingStrokeWidth;
       
       ctx.beginPath();
       if (wallOffset !== 0) {
@@ -11079,8 +11237,8 @@ class BuildingPainter {
       ctx.fill();
       ctx.stroke();
       
-      // Draw roof details (simplified straight skeleton)
-      this.drawRoofDetails(ctx, building, wallOffset, strokeWidth, outlineColour);
+      // Draw roof details (simplified straight skeleton) - use wall line scale for internal details
+      this.drawRoofDetails(ctx, building, wallOffset, wallStrokeWidth, outlineColour);
     }
   }
   
@@ -11497,9 +11655,25 @@ class PatchView {
         fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
       }
     }
+    // Apply district tinting if enabled
+    if (StateManager.tintDistricts && patch.ward && patch.wardColorTint) {
+      fillColour = BuildingPainter.blendColours(fillColour, patch.wardColorTint, 0.15);
+    }
+    
+    // Apply color tinting if configured
+    if (StateManager.tintStrength > 0) {
+      fillColour = Palette.applyTinting(
+        fillColour,
+        StateManager.tintMethod,
+        StateManager.tintStrength,
+        StateManager.tintWeathering
+      );
+    }
+    
+    const lineScale = StateManager.thinLines ? 0.5 : 1.0;
     ctx.fillStyle = fillColour;
     ctx.strokeStyle = this.palette.dark;
-    ctx.lineWidth = showCellOutlines ? 0.5 : 0;
+    ctx.lineWidth = showCellOutlines ? (0.5 * lineScale) : 0;
     
     ctx.beginPath();
     // Use rounded corners for farms
@@ -12073,6 +12247,14 @@ class StateManager {
   static zoom = 1.0; // Zoom level for 2D rendering
 
   static showRegionNames = true; // Display region/district names over grouped wards
+  
+  // Color scheme and visual options
+  static thinLines = false; // Use thinner line weights for cleaner look
+  static tintDistricts = false; // Apply color tinting to district patches
+  static weatheredRoofs = false; // Add weathering variation to roof colors
+  static tintMethod = 'spectrum'; // Tinting method: spectrum, brightness, overlay
+  static tintStrength = 0; // Tint strength percentage (0-100)
+  static tintWeathering = 0; // Weathering percentage (0-100)
 
   static pullParams() {
     const params = new URLSearchParams(window.location.search);
@@ -12173,6 +12355,9 @@ class StateManager {
     );
   }
 }
+
+// Expose StateManager globally for settings access
+window.StateManager = StateManager;
 
 class TownGenerator {
   constructor() {

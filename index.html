@@ -299,8 +299,77 @@
           '<button id="export-btn">Export PNG</button></div>' +
           '</div>' + // End tab-settings
           '<div class="tab-content" id="tab-colours">' +
-          '<h3>Palette Options</h3>' +
-          '<p style="color:#666;font-size:0.8rem;margin:10px 0;">Colour customisation options will be added here.</p>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+          '<label style="margin:0;">Preset:</label>' +
+          '<select id="color-preset" style="padding:4px 8px;border-radius:3px;border:1px solid #4a3d2c;background:#fff;">' +
+          '<option value="default">Default</option>' +
+          '<option value="ink">Ink</option>' +
+          '<option value="bw">Black & White</option>' +
+          '<option value="vivid">Vivid</option>' +
+          '<option value="natural">Natural</option>' +
+          '<option value="modern">Modern</option>' +
+          '</select>' +
+          '</div>' +
+          '<div class="color-grid" style="display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;margin-bottom:12px;">' +
+          '<label style="margin:0;">Paper</label>' +
+          '<input type="text" id="color-paper" value="#F3EDE2" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-paper-pick" value="#F3EDE2" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Ink</label>' +
+          '<input type="text" id="color-ink" value="#2B2416" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-ink-pick" value="#2B2416" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Roofs</label>' +
+          '<input type="text" id="color-roofs" value="#8B7355" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-roofs-pick" value="#8B7355" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Water</label>' +
+          '<input type="text" id="color-water" value="#4A7C59" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-water-pick" value="#4A7C59" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Greens</label>' +
+          '<input type="text" id="color-greens" value="#C8D4A8" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-greens-pick" value="#C8D4A8" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Roads</label>' +
+          '<input type="text" id="color-roads" value="#E1DBD5" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-roads-pick" value="#E1DBD5" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Walls</label>' +
+          '<input type="text" id="color-walls" value="#4C4C4C" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-walls-pick" value="#4C4C4C" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Trees</label>' +
+          '<input type="text" id="color-trees" value="#4A7C59" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-trees-pick" value="#4A7C59" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Labels</label>' +
+          '<input type="text" id="color-labels" value="#662C28" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-labels-pick" value="#662C28" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          
+          '<label style="margin:0;">Elements</label>' +
+          '<input type="text" id="color-elements" value="#D8D8CD" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-elements-pick" value="#D8D8CD" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '</div>' +
+          '<h3 style="margin-top:16px;">Tinting</h3>' +
+          '<label>Method:<br>' +
+          '<select id="tint-method" style="width:100%;padding:4px;border-radius:3px;border:1px solid #4a3d2c;background:#fff;margin-top:4px;">' +
+          '<option value="spectrum">Spectrum</option>' +
+          '<option value="brightness">Brightness</option>' +
+          '<option value="overlay">Overlay</option>' +
+          '</select></label>' +
+          '<label style="margin-top:8px;">Strength: <span id="tint-strength-value">60%</span><br>' +
+          '<input type="range" id="tint-strength" min="0" max="100" step="5" value="60"></label>' +
+          '<label>Weathering: <span id="tint-weathering-value">60%</span><br>' +
+          '<input type="range" id="tint-weathering" min="0" max="100" step="5" value="60"></label>' +
+          '<div class="checkbox-grid" style="margin-top:12px;">' +
+          '<label><input type="checkbox" id="thin-lines-check"> Thin Lines</label>' +
+          '<label><input type="checkbox" id="tint-districts-check"> Tint Districts</label>' +
+          '<label><input type="checkbox" id="weathered-roofs-check"> Weathered Roofs</label>' +
+          '</div>' +
+          '<div style="margin-top:12px;"><button id="apply-colors-btn">Apply Colours</button>' +
+          '<button id="save-colors-btn">Save</button>' +
+          '<button id="load-colors-btn">Load</button></div>' +
           '</div>'; // End tab-colours
         container.appendChild(controls);
 
@@ -684,6 +753,178 @@
           link.download = 'city-' + StateManager.seed + '.png';
           link.href = canvas.toDataURL('image/png');
           link.click();
+        });
+
+        // ===== COLOR SCHEME SYSTEM =====
+        const colorPresets = {
+          default: {
+            paper: '#F3EDE2', ink: '#2B2416', roofs: '#8B7355', water: '#4A7C59',
+            greens: '#C8D4A8', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#4A7C59',
+            labels: '#662C28', elements: '#D8D8CD'
+          },
+          ink: {
+            paper: '#FFFEF8', ink: '#000000', roofs: '#3F322C', water: '#8F9997',
+            greens: '#8D927B', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#777F66',
+            labels: '#662C28', elements: '#D8D8CD'
+          },
+          bw: {
+            paper: '#FFFFFF', ink: '#000000', roofs: '#666666', water: '#CCCCCC',
+            greens: '#AAAAAA', roads: '#EEEEEE', walls: '#333333', trees: '#888888',
+            labels: '#000000', elements: '#DDDDDD'
+          },
+          vivid: {
+            paper: '#FFF8DC', ink: '#1A0A00', roofs: '#DC143C', water: '#1E90FF',
+            greens: '#32CD32', roads: '#FFD700', walls: '#2F4F4F', trees: '#228B22',
+            labels: '#8B0000', elements: '#FF6347'
+          },
+          natural: {
+            paper: '#F5F5DC', ink: '#3E2723', roofs: '#8D6E63', water: '#4FC3F7',
+            greens: '#9CCC65', roads: '#EFEBE9', walls: '#5D4037', trees: '#66BB6A',
+            labels: '#6D4C41', elements: '#BCAAA4'
+          },
+          modern: {
+            paper: '#ECEFF1', ink: '#263238', roofs: '#607D8B', water: '#00BCD4',
+            greens: '#4CAF50', roads: '#CFD8DC', walls: '#455A64', trees: '#009688',
+            labels: '#37474F', elements: '#B0BEC5'
+          }
+        };
+
+        // Sync color pickers with text inputs
+        const colorFields = ['paper', 'ink', 'roofs', 'water', 'greens', 'roads', 'walls', 'trees', 'labels', 'elements'];
+        colorFields.forEach(field => {
+          const textInput = document.getElementById(`color-${field}`);
+          const colorPicker = document.getElementById(`color-${field}-pick`);
+          
+          textInput.addEventListener('input', () => {
+            if (/^#[0-9A-F]{6}$/i.test(textInput.value)) {
+              colorPicker.value = textInput.value;
+            }
+          });
+          
+          colorPicker.addEventListener('input', () => {
+            textInput.value = colorPicker.value.toUpperCase();
+          });
+        });
+
+        // Preset selector
+        document.getElementById('color-preset').addEventListener('change', function() {
+          const preset = colorPresets[this.value];
+          if (preset) {
+            Object.keys(preset).forEach(key => {
+              const textInput = document.getElementById(`color-${key}`);
+              const colorPicker = document.getElementById(`color-${key}-pick`);
+              if (textInput && colorPicker) {
+                textInput.value = preset[key];
+                colorPicker.value = preset[key];
+              }
+            });
+          }
+        });
+
+        // Tinting sliders
+        document.getElementById('tint-strength').addEventListener('input', function() {
+          document.getElementById('tint-strength-value').textContent = this.value + '%';
+        });
+        
+        document.getElementById('tint-weathering').addEventListener('input', function() {
+          document.getElementById('tint-weathering-value').textContent = this.value + '%';
+        });
+
+        // Visual options checkboxes
+        document.getElementById('thin-lines-check').addEventListener('change', function() {
+          StateManager.thinLines = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('tint-districts-check').addEventListener('change', function() {
+          StateManager.tintDistricts = this.checked;
+          generator.render();
+        });
+        
+        document.getElementById('weathered-roofs-check').addEventListener('change', function() {
+          StateManager.weatheredRoofs = this.checked;
+          generator.render();
+        });
+
+        // Apply colors button
+        document.getElementById('apply-colors-btn').addEventListener('click', function() {
+          // Update Palette class with new colors
+          const PaletteClass = window.Palette;
+          if (PaletteClass) {
+            PaletteClass.paper = document.getElementById('color-paper').value;
+            PaletteClass.dark = document.getElementById('color-ink').value;
+            PaletteClass.roof = document.getElementById('color-roofs').value;
+            PaletteClass.water = document.getElementById('color-water').value;
+            PaletteClass.park = document.getElementById('color-greens').value;
+            PaletteClass.light = document.getElementById('color-roads').value;
+            PaletteClass.wall = document.getElementById('color-walls').value;
+            PaletteClass.tree = document.getElementById('color-trees').value;
+            PaletteClass.labelText = document.getElementById('color-labels').value;
+            PaletteClass.insideCell = document.getElementById('color-elements').value;
+            
+            // Store tinting settings
+            if (window.StateManager) {
+              StateManager.tintMethod = document.getElementById('tint-method').value;
+              StateManager.tintStrength = parseInt(document.getElementById('tint-strength').value);
+              StateManager.tintWeathering = parseInt(document.getElementById('tint-weathering').value);
+            }
+            
+            console.log('Colors applied:', {
+              paper: PaletteClass.paper,
+              ink: PaletteClass.dark,
+              roofs: PaletteClass.roof,
+              water: PaletteClass.water
+            });
+            
+            // Force re-render
+            if (generator && generator.render) {
+              generator.render();
+            }
+          } else {
+            console.error('Palette class not found - make sure the page has fully loaded');
+          }
+        });
+
+        // Save/Load buttons
+        document.getElementById('save-colors-btn').addEventListener('click', function() {
+          const palette = {};
+          colorFields.forEach(field => {
+            palette[field] = document.getElementById(`color-${field}`).value;
+          });
+          palette.tintMethod = document.getElementById('tint-method').value;
+          palette.tintStrength = document.getElementById('tint-strength').value;
+          palette.tintWeathering = document.getElementById('tint-weathering').value;
+          palette.thinLines = document.getElementById('thin-lines-check').checked;
+          palette.tintDistricts = document.getElementById('tint-districts-check').checked;
+          palette.weatheredRoofs = document.getElementById('weathered-roofs-check').checked;
+          
+          localStorage.setItem('cityColorPalette', JSON.stringify(palette));
+          alert('Color palette saved!');
+        });
+
+        document.getElementById('load-colors-btn').addEventListener('click', function() {
+          const saved = localStorage.getItem('cityColorPalette');
+          if (saved) {
+            const palette = JSON.parse(saved);
+            colorFields.forEach(field => {
+              if (palette[field]) {
+                document.getElementById(`color-${field}`).value = palette[field];
+                document.getElementById(`color-${field}-pick`).value = palette[field];
+              }
+            });
+            if (palette.tintMethod) document.getElementById('tint-method').value = palette.tintMethod;
+            if (palette.tintStrength) document.getElementById('tint-strength').value = palette.tintStrength;
+            if (palette.tintWeathering) document.getElementById('tint-weathering').value = palette.tintWeathering;
+            if (palette.thinLines !== undefined) document.getElementById('thin-lines-check').checked = palette.thinLines;
+            if (palette.tintDistricts !== undefined) document.getElementById('tint-districts-check').checked = palette.tintDistricts;
+            if (palette.weatheredRoofs !== undefined) document.getElementById('weathered-roofs-check').checked = palette.weatheredRoofs;
+            
+            document.getElementById('tint-strength-value').textContent = document.getElementById('tint-strength').value + '%';
+            document.getElementById('tint-weathering-value').textContent = document.getElementById('tint-weathering').value + '%';
+            alert('Color palette loaded!');
+          } else {
+            alert('No saved palette found');
+          }
         });
       }
 
