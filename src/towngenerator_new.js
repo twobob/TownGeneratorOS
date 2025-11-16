@@ -306,7 +306,7 @@ class Voronoi {
       triangle.urquhartLongestEdge = longest;
     }
     
-    // Store the removed edges for potential visualization or analysis
+    // Store the removed edges for potential visualisation or analysis
     this.urquhartRemovedEdges = Array.from(edgesToRemove);
     
     return edgesToRemove;
@@ -422,7 +422,7 @@ class Polygon {
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len < 0.001) continue;
       
-      // Normalized edge direction
+      // Normalised edge direction
       const ux = dx / len;
       const uy = dy / len;
       
@@ -884,6 +884,450 @@ class Patch {
   }
 }
 
+
+class LotPartitioner {
+  constructor(shape, minArea, variance = 1.2, streetEdges = []) {
+    this.shape = shape;
+    this.minArea = minArea;
+    this.variance = variance;
+    this.streetEdges = streetEdges; // Array of edge indices that border streets
+    this.cuts = [];
+    this.minOffset = 1.2; // Minimum offset from polygon edge when cutting
+  }
+
+  /**
+   * Main entry point - recursively subdivide the polygon
+   */
+  partition() {
+    return this.subdivide(this.shape);
+  }
+
+  /**
+   * Recursively subdivide a polygon until pieces are small enough
+   */
+  subdivide(poly) {
+    if (this.isAtomic(poly)) {
+      return [poly];
+    }
+
+    const pieces = this.makeCut(poly);
+    if (pieces.length === 1) {
+      return [poly]; // Couldn't cut, return as-is
+    }
+
+    const result = [];
+    for (const piece of pieces) {
+      const subdivided = this.subdivide(piece);
+      result.push(...subdivided);
+    }
+    return result;
+  }
+
+  /**
+   * Check if polygon is small enough to stop subdividing
+   */
+  isAtomic(poly) {
+    const area = this.polygonArea(poly);
+    const targetArea = this.minArea * Math.pow(this.variance, Random.float(-1, 1));
+    return area < targetArea;
+  }
+
+
+  makeCut(poly, iteration = 0) {
+    if (iteration > 10) {
+      return [poly];
+    }
+
+    const n = poly.length;
+    let obb;
+    
+    // On retry, rotate the OBB slightly
+    if (iteration > 0) {
+      const angle = (iteration / 10) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      // Rotate polygon, get AABB, rotate back
+      const rotated = poly.map(p => ({
+        x: p.x * cos - p.y * sin,
+        y: p.x * sin + p.y * cos
+      }));
+      const aabb = this.getAABB(rotated);
+      obb = aabb.map(p => ({
+        x: p.x * cos + p.y * sin,
+        y: -p.x * sin + p.y * cos
+      }));
+    } else {
+      obb = this.getOBB(poly);
+    }
+
+    const origin = obb[0];
+    let longAxis = {x: obb[1].x - origin.x, y: obb[1].y - origin.y};
+    let shortAxis = {x: obb[3].x - origin.x, y: obb[3].y - origin.y};
+    
+    // Swap if needed so longAxis is actually longer
+    if (Math.hypot(longAxis.x, longAxis.y) < Math.hypot(shortAxis.x, shortAxis.y)) {
+      [longAxis, shortAxis] = [shortAxis, longAxis];
+    }
+
+    // Project centroid onto long axis
+    const centroid = this.polygonCentroid(poly);
+    const toCenter = {x: centroid.x - origin.x, y: centroid.y - origin.y};
+    const proj = (toCenter.x * longAxis.x + toCenter.y * longAxis.y) / 
+                 (longAxis.x * longAxis.x + longAxis.y * longAxis.y);
+    
+    // Cut position with randomness
+    const cutT = (proj + Random.float(0, 1) / 3) / 2;
+    const cutPt = {x: origin.x + longAxis.x * cutT, y: origin.y + longAxis.y * cutT};
+
+    // Find first edge intersecting perpendicular cut line
+    let firstIdx = -1;
+    let firstPt = null;
+    let firstDir = null;
+    let bestDot = 0;
+
+    for (let i = 0; i < n; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      const edge = {x: b.x - a.x, y: b.y - a.y};
+      const edgeLen = Math.hypot(edge.x, edge.y);
+      if (edgeLen < 1e-10) continue;
+
+      const hit = this.lineIntersection(
+        cutPt.x, cutPt.y, shortAxis.x, shortAxis.y,
+        a.x, a.y, edge.x, edge.y
+      );
+
+      if (hit && hit.t2 > 0 && hit.t2 < 1) {
+        const edgeN = {x: edge.x / edgeLen, y: edge.y / edgeLen};
+        const alignment = Math.abs(longAxis.x * edgeN.x + longAxis.y * edgeN.y) / 
+                         Math.hypot(longAxis.x, longAxis.y);
+        if (alignment > bestDot) {
+          bestDot = alignment;
+          firstIdx = i;
+          firstPt = {x: a.x + edge.x * hit.t2, y: a.y + edge.y * hit.t2};
+          firstDir = edgeN;
+        }
+      }
+    }
+
+    if (firstIdx === -1) return [poly];
+
+    // Perpendicular to first edge
+    const perpDir = {x: -firstDir.y, y: firstDir.x};
+
+    // Find second edge
+    let secondIdx = -1;
+    let secondPt = null;
+    let minT = Infinity;
+    let secondEdge = null;
+
+    for (let i = 0; i < n; i++) {
+      if (i === firstIdx) continue;
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      const edge = {x: b.x - a.x, y: b.y - a.y};
+      const edgeLen = Math.hypot(edge.x, edge.y);
+      if (edgeLen < 1e-10) continue;
+
+      const hit = this.lineIntersection(
+        firstPt.x, firstPt.y, perpDir.x, perpDir.y,
+        a.x, a.y, edge.x, edge.y
+      );
+
+      if (hit && hit.t1 > 0 && hit.t1 < minT && hit.t2 > 0 && hit.t2 < 1) {
+        minT = hit.t1;
+        secondIdx = i;
+        secondPt = {x: a.x + edge.x * hit.t2, y: a.y + edge.y * hit.t2};
+        secondEdge = edge;
+      }
+    }
+
+    if (secondIdx === -1) return [poly];
+
+    // Check perpendicularity: (perpDir × secondEdge)² / |perpDir|²|secondEdge|²
+    const cross = perpDir.x * secondEdge.y - perpDir.y * secondEdge.x;
+    const perpCheck = (cross * cross) / 
+                      ((perpDir.x * perpDir.x + perpDir.y * perpDir.y) * 
+                       (secondEdge.x * secondEdge.x + secondEdge.y * secondEdge.y));
+
+    if (perpCheck > 0.99) {
+      let cutLine = [firstPt, secondPt];
+      
+      // detectStraight: if minTurnOffset > 0, check if cut is nearly straight
+      if (this.minOffset > 0) {
+        const cutArea = Math.abs(
+          (cutLine[0].x * (cutLine[1].y - cutLine[0].y) + 
+           cutLine[1].x * (cutLine[0].y - cutLine[1].y)) / 2
+        );
+        const cutDist = Math.hypot(cutLine[1].x - cutLine[0].x, cutLine[1].y - cutLine[0].y);
+        if (cutArea / cutDist < this.minOffset) {
+          cutLine = [firstPt, secondPt]; // Straighten
+        }
+      }
+
+      const pieces = this.splitPolygon(poly, firstIdx, secondIdx, cutLine);
+      const a1 = this.polygonArea(pieces[0]);
+      const a2 = this.polygonArea(pieces[1]);
+      
+      if (Math.max(a1 / a2, a2 / a1) < 2 * this.variance) {
+        this.cuts.push(cutLine);
+        return pieces;
+      }
+    }
+
+
+    const offsetRatio = Math.min(0.5, this.minOffset / minT + 
+                        (1 - 2 * this.minOffset / minT) * Random.float(0, 1) / 3);
+    const offsetPt = {
+      x: firstPt.x + perpDir.x * minT * offsetRatio,
+      y: firstPt.y + perpDir.y * minT * offsetRatio
+    };
+
+    // Find third edge for offset cut
+    let thirdIdx = -1;
+    let thirdPt = null;
+    let bestCross = -Infinity;
+
+    for (let i = 0; i < n; i++) {
+      if (i === firstIdx) continue;
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      const edge = {x: b.x - a.x, y: b.y - a.y};
+      const edgeLen = Math.hypot(edge.x, edge.y);
+      if (edgeLen < 1e-10) continue;
+
+      const perpEdge = {x: edge.y, y: -edge.x};
+      const hit = this.lineIntersection(
+        offsetPt.x, offsetPt.y, perpEdge.x, perpEdge.y,
+        a.x, a.y, edge.x, edge.y
+      );
+
+      if (hit && hit.t1 > 0 && hit.t2 > 0 && hit.t2 < 1) {
+        const crossVal = (perpDir.x * edge.y - perpDir.y * edge.x) / edgeLen;
+        if (crossVal > bestCross) {
+          // Check no other edges intersect
+          let clear = true;
+          const testPt = {x: a.x + edge.x * hit.t2, y: a.y + edge.y * hit.t2};
+          for (let j = 0; j < n; j++) {
+            if (j === i || j === firstIdx) continue;
+            const c = poly[j];
+            const d = poly[(j + 1) % n];
+            const e2 = {x: d.x - c.x, y: d.y - c.y};
+            if (Math.hypot(e2.x, e2.y) < 1e-10) continue;
+            
+            const check = this.lineIntersection(
+              offsetPt.x, offsetPt.y, perpEdge.x, perpEdge.y,
+              c.x, c.y, e2.x, e2.y
+            );
+            if (check && check.t1 >= 0 && check.t1 <= 1 && check.t2 >= 0 && check.t2 <= 1) {
+              clear = false;
+              break;
+            }
+          }
+          if (clear) {
+            bestCross = crossVal;
+            thirdIdx = i;
+            thirdPt = testPt;
+          }
+        }
+      }
+    }
+
+    if (thirdPt) {
+      const cutLine = [firstPt, offsetPt, thirdPt];
+      const pieces = this.splitPolygon(poly, firstIdx, thirdIdx, cutLine);
+      const a1 = this.polygonArea(pieces[0]);
+      const a2 = this.polygonArea(pieces[1]);
+      
+      if (Math.max(a1 / a2, a2 / a1) < 2 * this.variance) {
+        this.cuts.push(cutLine);
+        return pieces;
+      }
+    }
+
+    return this.makeCut(poly, iteration + 1);
+  }
+
+  getAABB(poly) {
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const p of poly) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    return [
+      {x: minX, y: minY},
+      {x: maxX, y: minY},
+      {x: maxX, y: maxY},
+      {x: minX, y: maxY}
+    ];
+  }
+
+  splitPolygon(poly, b, c, d) {
+    const a = poly.slice(); // Make a copy to work with
+    const f = a[c]; // vertex at secondEdge
+    const h = d[0]; // cutLine start
+    
+    // Insert cutLine start if not already at firstEdge vertex
+    if (a[b].x !== h.x || a[b].y !== h.y) {
+      if (b < c) c++; // adjust secondEdge index
+      a.splice(++b, 0, h); // insert after firstEdge
+    }
+    
+    // Insert cutLine end if not already at secondEdge vertex  
+    const lastCut = d[d.length - 1];
+    if (f.x !== lastCut.x || f.y !== lastCut.y) {
+      if (c < b) b++; // adjust firstEdge index
+      a.splice(++c, 0, lastCut); // insert after secondEdge
+    }
+    
+    let piece1, piece2;
+    
+    if (b < c) {
+      // firstEdge comes before secondEdge
+      piece1 = a.slice(b + 1, c); // vertices between edges
+      const reversed = d.slice().reverse();
+      piece1.push(...reversed); // add reversed cutLine
+      
+      piece2 = a.slice(c + 1); // from secondEdge to end
+      piece2.push(...a.slice(0, b)); // wrap around to firstEdge
+    } else {
+      // secondEdge comes before firstEdge (wrapped)
+      piece1 = a.slice(b + 1); // from firstEdge to end
+      piece1.push(...a.slice(0, c)); // wrap to secondEdge
+      const reversed = d.slice().reverse();
+      piece1.push(...reversed); // add reversed cutLine
+      
+      piece2 = a.slice(c + 1, b); // between secondEdge and firstEdge
+    }
+    
+    // Add cutLine to piece2
+    piece2.push(...d);
+    
+    return [piece1, piece2];
+  }
+
+  /**
+   * Get oriented bounding box (OBB) for polygon - minimum area rectangle
+   * Returns 4 corners: [origin, x-axis end, opposite corner, y-axis end]
+   * Uses rotating calipers to find minimum bounding box
+   */
+  getOBB(poly) {
+    const n = poly.length;
+    if (n < 3) {
+      // Degenerate case - just return AABB
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      for (const p of poly) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      return [
+        {x: minX, y: minY},
+        {x: maxX, y: minY},
+        {x: maxX, y: maxY},
+        {x: minX, y: maxY}
+      ];
+    }
+
+    // Try each edge direction as potential OBB axis
+    let minArea = Infinity;
+    let bestBox = null;
+
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % n];
+      
+      // Edge direction
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-10) continue;
+      
+      // Normalised edge direction (X-axis of OBB)
+      const ux = dx / len;
+      const uy = dy / len;
+      
+      // Perpendicular (Y-axis of OBB)
+      const vx = -uy;
+      const vy = ux;
+      
+      // Project all points onto these axes
+      let minU = Infinity, maxU = -Infinity;
+      let minV = Infinity, maxV = -Infinity;
+      
+      for (const p of poly) {
+        const u = p.x * ux + p.y * uy;
+        const v = p.x * vx + p.y * vy;
+        minU = Math.min(minU, u);
+        maxU = Math.max(maxU, u);
+        minV = Math.min(minV, v);
+        maxV = Math.max(maxV, v);
+      }
+      
+      const area = (maxU - minU) * (maxV - minV);
+      if (area < minArea) {
+        minArea = area;
+        // Reconstruct box corners in world space
+        bestBox = [
+          {x: minU * ux + minV * vx, y: minU * uy + minV * vy},
+          {x: maxU * ux + minV * vx, y: maxU * uy + minV * vy},
+          {x: maxU * ux + maxV * vx, y: maxU * uy + maxV * vy},
+          {x: minU * ux + maxV * vx, y: minU * uy + maxV * vy}
+        ];
+      }
+    }
+
+    return bestBox || [
+      {x: 0, y: 0},
+      {x: 1, y: 0},
+      {x: 1, y: 1},
+      {x: 0, y: 1}
+    ];
+  }
+
+  /**
+   * Intersect two infinite lines defined by point + direction
+   * Returns {t1, t2} where intersection = p1 + t1*dir1 = p2 + t2*dir2
+   */
+  lineIntersection(p1x, p1y, dir1x, dir1y, p2x, p2y, dir2x, dir2y) {
+    const det = dir1x * dir2y - dir1y * dir2x;
+    if (Math.abs(det) < 1e-10) return null;
+
+    const dx = p2x - p1x;
+    const dy = p2y - p1y;
+    const t1 = (dx * dir2y - dy * dir2x) / det;
+    const t2 = (dx * dir1y - dy * dir1x) / det;
+
+    return {t1, t2};
+  }
+
+  polygonArea(poly) {
+    let area = 0;
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % n];
+      area += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(area) / 2;
+  }
+
+  polygonCentroid(poly) {
+    let cx = 0, cy = 0;
+    const n = poly.length;
+    for (const p of poly) {
+      cx += p.x;
+      cy += p.y;
+    }
+    return {x: cx / n, y: cy / n};
+  }
+}
+
 class Ward {
   constructor(model, patch, wardType = 'craftsmen') {
     this.model = model;
@@ -1327,8 +1771,163 @@ class Ward {
       // Create piazza with buildings around perimeter and empty centre
       this.geometry = this.createPiazza(availableShape);
     } else {
-      // Normal ward with buildings
-      const innerBuildings = this.createAlleys(availableShape, minSq, gridChaos, sizeChaos, true);
+      let innerBuildings;
+      
+
+      if (lots || complex) {
+
+        const blockSize = 4.0; // multiplier for blocks vs lots
+        const alleysVariance = 16 * gridChaos; 
+        const alleysPartitioner = new LotPartitioner(
+          availableShape,
+          minSq * blockSize,
+          alleysVariance,
+          []
+        );
+        alleysPartitioner.minTurnOffset = 0.5;
+        const blocks = alleysPartitioner.partition();
+        
+        // Step 2: For EACH block, create lots → rects → buildings
+        innerBuildings = [];
+        const lotsVariance = Math.max(4 * sizeChaos, 1.2);
+        
+        for (const blockShape of blocks) {
+          // Partition block into lots (TwistedBlock.createLots)
+          const lotsPartitioner = new LotPartitioner(blockShape, minSq, lotsVariance, []);
+          lotsPartitioner.minTurnOffset = 0.5;
+          const lotsPartitioned = lotsPartitioner.partition();
+          
+          // Filter lots
+          const lotsList = [];
+          const minArea = minSq / 4;
+          for (const lot of lotsPartitioned) {
+            if (lot.length < 4) continue;
+            
+            const area = this.polygonArea(lot);
+            if (area < minArea) continue;
+            
+            const obb = this.getSimpleOBB(lot);
+            const width = Point.distance(obb[0], obb[1]);
+            const height = Point.distance(obb[1], obb[2]);
+            const fillRatio = area / (width * height);
+            
+            if (width >= 1.2 && height >= 1.2 && fillRatio > 0.5) {
+              lotsList.push(lot);
+            }
+          }
+          
+          // Create rects from lots (Block.createRects)
+          const rectsList = [];
+          const buildingGap = (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 0.6;
+          const shrinkMode = (StateManager.buildingShrink !== undefined) ? StateManager.buildingShrink : 'Shrink';
+          
+          for (const lot of lotsList) {
+            let rect = lot;
+            
+            // Check if already rectangle
+            if (lot.length === 4) {
+              const lotArea = this.polygonArea(lot);
+              const obb = this.getSimpleOBB(lot);
+              const obbArea = Point.distance(obb[0], obb[1]) * Point.distance(obb[1], obb[2]);
+              if (lotArea / obbArea > 0.75) {
+                rectsList.push(rect);
+                continue;
+              }
+            }
+            
+            // Find street edge - check against BLOCK shape (not ward shape)
+            let streetEdge = -1;
+            for (let i = 0; i < lot.length; i++) {
+              const a = lot[i];
+              const b = lot[(i + 1) % lot.length];
+              for (let j = 0; j < blockShape.length; j++) {
+                const c = blockShape[j];
+                const d = blockShape[(j + 1) % blockShape.length];
+                if (this.edgesConverge(a, b, c, d)) {
+                  streetEdge = i;
+                  break;
+                }
+              }
+              if (streetEdge !== -1) break;
+            }
+            
+            // Get LIR or LIRA
+            if (streetEdge !== -1) {
+              rect = this.getLIR(lot, streetEdge);
+            } else {
+              rect = this.getLIRA(lot);
+            }
+            
+            // Check minimum dimensions
+            if (rect && rect.length >= 4) {
+              const w = Point.distance(rect[0], rect[1]);
+              const h = Point.distance(rect[1], rect[2]);
+              const lotArea = this.polygonArea(lot);
+              const minDim = Math.max(1.2, Math.sqrt(lotArea) / 2);
+              
+              if (w >= minDim && h >= minDim) {
+                const insetAmount = buildingGap * (1 - Math.abs(Random.float() + Random.float() - 1));
+                
+                if (shrinkMode === 'Shrink' && insetAmount > 0.3) {
+                  // Create inset array: 0 for street edges, insetAmount for others
+                  const insets = [];
+                  for (let i = 0; i < rect.length; i++) {
+                    const a = rect[i];
+                    const b = rect[(i + 1) % rect.length];
+                    let isStreetEdge = false;
+                    
+                    // Check if this edge aligns with block perimeter (converges with block edge)
+                    for (let j = 0; j < blockShape.length; j++) {
+                      const c = blockShape[j];
+                      const d = blockShape[(j + 1) % blockShape.length];
+                      if (this.edgesConverge(a, b, c, d)) {
+                        isStreetEdge = true;
+                        break;
+                      }
+                    }
+                    
+                    insets.push(isStreetEdge ? 0 : insetAmount);
+                  }
+                  
+                  const shrunk = this.shrinkPolygon(rect, insets);
+                  
+                  // Validate shrunk polygon: check minimum edge lengths
+                  if (shrunk && shrunk.length >= 3) {
+                    let valid = true;
+                    const minEdgeLength = 1.0; // minimum edge length to avoid slivers
+                    for (let i = 0; i < Math.min(2, shrunk.length); i++) {
+                      const p1 = shrunk[i];
+                      const p2 = shrunk[(i + 1) % shrunk.length];
+                      if (Point.distance(p1, p2) < minEdgeLength) {
+                        valid = false;
+                        break;
+                      }
+                    }
+                    
+                    if (valid) {
+                      rect = shrunk;
+                    }
+                  }
+                }
+                
+                rectsList.push(rect);
+              } else {
+                rectsList.push(lot);
+              }
+            } else {
+              rectsList.push(lot);
+            }
+          }
+          
+          // Create buildings from rects (Block.createBuildings)
+          const blockBuildings = this.createBuildingsFromRects(rectsList, minSq);
+          innerBuildings.push(...blockBuildings);
+        }
+      } else {
+        // Normal mode: use old createAlleys system
+        innerBuildings = this.createAlleys(availableShape, minSq, gridChaos, sizeChaos, true);
+      }
+      
       this.geometry = roadBuildings.length ? roadBuildings.concat(innerBuildings) : innerBuildings;
     }
     
@@ -1577,6 +2176,742 @@ class Ward {
     }
     
     return buildings;
+  }
+
+  /**
+   * Detect which edges of the ward border streets (for lot orientation)
+   */
+  detectStreetEdges() {
+    const streetEdges = [];
+    
+    if (this.patch.face && this.patch.face.edge) {
+      const loop = this.patch.face.loop();
+      for (let i = 0; i < loop.length; i++) {
+        const e = loop[i].e;
+        if (e.data === EdgeType.ROAD || e.data === EdgeType.BRIDGE) {
+          streetEdges.push(i);
+        }
+      }
+    }
+    
+    return streetEdges;
+  }
+
+  createLots(partitionedPolys, minSq) {
+    const lots = [];
+    
+    for (const poly of partitionedPolys) {
+      const area = this.polygonArea(poly);
+      
+      // Filter out too-small lots
+      if (poly.length < 4 || area < minSq / 4) {
+        continue;
+      }
+      
+      // Check if lot is reasonably rectangular (OBB fill ratio)
+      const obb = this.getSimpleOBB(poly);
+      const width = Point.distance(obb[0], obb[1]);
+      const height = Point.distance(obb[1], obb[2]);
+      const obbArea = width * height;
+      const fillRatio = area / obbArea;
+      
+      // Require decent rectangularity and minimum dimensions
+      if (width >= 1.2 && height >= 1.2 && fillRatio > 0.5) {
+        lots.push(poly);
+      }
+    }
+    
+    return lots;
+  }
+
+
+  createRects(lots, insetAmount = 0.3) {
+    const rects = [];
+    
+    for (const lot of lots) {
+      // Check if lot is already a nice rectangle
+      if (this.isRectangle(lot)) {
+        rects.push(lot);
+        continue;
+      }
+      
+      // Find street-facing edge (if any)
+      let streetEdge = this.findStreetEdge(lot);
+      
+      // Get lot inset rectangle (LIR) - best-fit rectangle for the lot
+      let rect;
+      if (streetEdge !== -1) {
+        rect = this.getLIR(lot, streetEdge); // Rectangle aligned to street edge
+      } else {
+        rect = this.getLIRA(lot); // Rectangle aligned to longest axis
+      }
+      
+      // Ensure minimum dimensions
+      const area = this.polygonArea(lot);
+      const minDim = Math.max(1.2, Math.sqrt(area) / 2);
+      
+      if (rect) {
+        const width = Point.distance(rect[0], rect[1]);
+        const height = Point.distance(rect[1], rect[2]);
+        
+        if (width >= minDim && height >= minDim) {
+          rects.push(rect);
+        } else {
+          rects.push(lot); // Use original lot if rect is too small
+        }
+      } else {
+        rects.push(lot);
+      }
+      
+      // Apply random inset/shrink for variation
+      if (Random.chance(0.6) && insetAmount > 0) {
+        const lastRect = rects[rects.length - 1];
+        const randomInset = insetAmount * Random.float(0.5, 1.0);
+        const shrunken = this.shrinkPolygon(lastRect, randomInset);
+        if (shrunken && shrunken.length >= 3) {
+          rects[rects.length - 1] = shrunken;
+        }
+      }
+    }
+    
+    return rects;
+  }
+
+
+  createBuildingsFromRects(rects, minSq) {
+    const buildings = [];
+    const shapeFactor = 1.0;
+    const minArea = (minSq / 4) * shapeFactor;
+    
+    for (const rect of rects) {
+      let building;
+      
+      // If rect has more than 4 vertices, simplify it first
+      if (rect.length > 4) {
+        building = rect.slice();
+        while (building.length > 4) {
+          this.simplifyPolygon(building);
+        }
+      } else {
+        building = rect;
+      }
+      
+      // Now create complex building shape from the 4-vertex rect
+      if (building.length === 4) {
+        const complexBuilding = this.createComplexBuilding(building, minArea, true, null, 0.6);
+        buildings.push(complexBuilding || building);
+      } else {
+        buildings.push(building);
+      }
+    }
+    
+    return buildings;
+  }
+
+  /**
+   * Check if polygon is approximately rectangular
+   */
+  isRectangle(poly) {
+    if (poly.length !== 4) return false;
+    
+    const area = this.polygonArea(poly);
+    const obb = this.getSimpleOBB(poly);
+    const obbArea = Point.distance(obb[0], obb[1]) * Point.distance(obb[1], obb[2]);
+    
+    return area / obbArea > 0.75;
+  }
+
+  /**
+   * Find which edge (if any) faces a street
+   */
+  findStreetEdge(lot) {
+    if (!this.patch.face || !this.patch.face.edge) return -1;
+    
+    const loop = this.patch.face.loop();
+    const wardShape = loop.map(he => he.v);
+    
+    // Check each lot edge against ward edges
+    for (let i = 0; i < lot.length; i++) {
+      const a = lot[i];
+      const b = lot[(i + 1) % lot.length];
+      
+      // Check if this lot edge is close to a ward street edge
+      for (let j = 0; j < loop.length; j++) {
+        const e = loop[j].e;
+        if (e.data !== EdgeType.ROAD && e.data !== EdgeType.BRIDGE) continue;
+        
+        const wa = wardShape[j];
+        const wb = wardShape[(j + 1) % wardShape.length];
+        
+        // Check if lot edge aligns with ward street edge
+        if (this.edgesConverge(a, b, wa, wb)) {
+          return i;
+        }
+      }
+    }
+    
+    return -1;
+  }
+
+  /**
+   * Check if two edges are approximately aligned
+   */
+  edgesConverge(a1, a2, b1, b2) {
+    const distThreshold = 2.0;
+    
+    // Check if edges are close and parallel
+    const dist1 = Point.distance(a1, b1);
+    const dist2 = Point.distance(a2, b2);
+    const dist3 = Point.distance(a1, b2);
+    const dist4 = Point.distance(a2, b1);
+    
+    return (dist1 < distThreshold && dist2 < distThreshold) ||
+           (dist3 < distThreshold && dist4 < distThreshold);
+  }
+
+  getLIR(lot, streetEdgeIndex) {
+    const n = lot.length;
+    const edgeStart = lot[streetEdgeIndex];
+    const edgeEnd = lot[(streetEdgeIndex + 1) % n];
+    
+    // Get edge direction (this is the street frontage)
+    let dx = edgeEnd.x - edgeStart.x;
+    let dy = edgeEnd.y - edgeStart.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) return null;
+    
+    // Normalise to unit vector
+    dx /= len;
+    dy /= len;
+    
+    // Rotate lot so street edge is horizontal
+    // This makes finding the bounding rect easier
+    const rotated = lot.map(p => ({
+      x: (p.x - edgeStart.x) * dx + (p.y - edgeStart.y) * dy,
+      y: -(p.x - edgeStart.x) * dy + (p.y - edgeStart.y) * dx
+    }));
+    
+    // Find bounding box in rotated space
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    
+    for (const p of rotated) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    
+    // Create rectangle in rotated space (street edge at y=0 ideally)
+    // We want the rectangle to be flush with the street edge
+    const rectRotated = [
+      {x: minX, y: 0},
+      {x: maxX, y: 0},
+      {x: maxX, y: maxY},
+      {x: minX, y: maxY}
+    ];
+    
+    // Rotate back to world space
+    return rectRotated.map(p => ({
+      x: edgeStart.x + p.x * dx - p.y * dy,
+      y: edgeStart.y + p.x * dy + p.y * dx
+    }));
+  }
+
+  /**
+   * Get Lot Inset Rectangle Aligned - rectangle aligned to polygon's major axis
+   */
+  getLIRA(lot) {
+    return this.getSimpleOBB(lot);
+  }
+
+  /**
+   * Simple oriented bounding box - minimum area rectangle
+   */
+  getSimpleOBB(poly) {
+    const n = poly.length;
+    if (n < 3) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      for (const p of poly) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      return [
+        {x: minX, y: minY},
+        {x: maxX, y: minY},
+        {x: maxX, y: maxY},
+        {x: minX, y: maxY}
+      ];
+    }
+
+    let minArea = Infinity;
+    let bestBox = null;
+
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % n];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-10) continue;
+      
+      const ux = dx / len;
+      const uy = dy / len;
+      const vx = -uy;
+      const vy = ux;
+      
+      let minU = Infinity, maxU = -Infinity;
+      let minV = Infinity, maxV = -Infinity;
+      
+      for (const p of poly) {
+        const u = p.x * ux + p.y * uy;
+        const v = p.x * vx + p.y * vy;
+        minU = Math.min(minU, u);
+        maxU = Math.max(maxU, u);
+        minV = Math.min(minV, v);
+        maxV = Math.max(maxV, v);
+      }
+      
+      const area = (maxU - minU) * (maxV - minV);
+      if (area < minArea) {
+        minArea = area;
+        bestBox = [
+          {x: minU * ux + minV * vx, y: minU * uy + minV * vy},
+          {x: maxU * ux + minV * vx, y: maxU * uy + minV * vy},
+          {x: maxU * ux + maxV * vx, y: maxU * uy + maxV * vy},
+          {x: minU * ux + maxV * vx, y: minU * uy + maxV * vy}
+        ];
+      }
+    }
+
+    return bestBox || [{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}, {x: 0, y: 1}];
+  }
+
+  /**
+   * Shrink polygon uniformly by inset amount
+   */
+  shrinkPolygon(poly, inset) {
+    const n = poly.length;
+    const result = [];
+    
+    for (let i = 0; i < n; i++) {
+      const prev = poly[(i + n - 1) % n];
+      const curr = poly[i];
+      const next = poly[(i + 1) % n];
+      
+      // Edge directions
+      const e1x = curr.x - prev.x;
+      const e1y = curr.y - prev.y;
+      const e2x = next.x - curr.x;
+      const e2y = next.y - curr.y;
+      
+      const e1len = Math.hypot(e1x, e1y) || 1e-6;
+      const e2len = Math.hypot(e2x, e2y) || 1e-6;
+      
+      // Inward normals
+      const n1x = -e1y / e1len;
+      const n1y = e1x / e1len;
+      const n2x = -e2y / e2len;
+      const n2y = e2x / e2len;
+      
+      // Bisector
+      const bx = n1x + n2x;
+      const by = n1y + n2y;
+      const blen = Math.hypot(bx, by) || 1e-6;
+      
+      result.push({
+        x: curr.x + (bx / blen) * inset,
+        y: curr.y + (by / blen) * inset
+      });
+    }
+    
+    return result;
+  }
+
+  /**
+   * Simplify polygon to target vertex count
+   */
+  simplifyPolygon(poly, targetVertices) {
+    let result = poly.slice();
+    
+    while (result.length > targetVertices) {
+      // Find vertex with smallest contribution (smallest angle)
+      let minAngle = Infinity;
+      let minIndex = -1;
+      
+      for (let i = 0; i < result.length; i++) {
+        const prev = result[(i + result.length - 1) % result.length];
+        const curr = result[i];
+        const next = result[(i + 1) % result.length];
+        
+        const v1x = prev.x - curr.x;
+        const v1y = prev.y - curr.y;
+        const v2x = next.x - curr.x;
+        const v2y = next.y - curr.y;
+        
+        const dot = v1x * v2x + v1y * v2y;
+        const len1 = Math.hypot(v1x, v1y);
+        const len2 = Math.hypot(v2x, v2y);
+        
+        const angle = Math.acos(dot / (len1 * len2 + 1e-6));
+        
+        if (angle < minAngle) {
+          minAngle = angle;
+          minIndex = i;
+        }
+      }
+      
+      if (minIndex !== -1) {
+        result.splice(minIndex, 1);
+      } else {
+        break;
+      }
+    }
+    
+    return result;
+  }
+
+
+  createComplexBuilding(rect, minArea, front, symmetric, tolerance) {
+    if (rect.length !== 4) return null;
+    
+    tolerance = tolerance || 0;
+    const gridSize = Math.sqrt(minArea);
+    
+    // Calculate grid dimensions
+    const side1 = Point.distance(rect[0], rect[1]);
+    const side2 = Point.distance(rect[1], rect[2]);
+    const side3 = Point.distance(rect[2], rect[3]);
+    const side4 = Point.distance(rect[3], rect[0]);
+    
+    const cols = Math.ceil(Math.min(side1, side3) / gridSize);
+    const rows = Math.ceil(Math.min(side2, side4) / gridSize);
+    
+    if (cols <= 1 || rows <= 1) return null;
+    
+    // Get building plan
+    const plan = symmetric ? this.getBuildingPlanSym(cols, rows) :
+                 front ? this.getBuildingPlanFront(cols, rows) :
+                 this.getBuildingPlan(cols, rows);
+    
+    // Count filled cells
+    let filledCount = 0;
+    for (let i = 0; i < plan.length; i++) {
+      if (plan[i]) filledCount++;
+    }
+    
+    // If all cells are filled, return null (not interesting)
+    if (filledCount >= cols * rows) return null;
+    
+    // Create grid of points
+    const gridPoints = this.createBuildingGrid(rect, cols, rows, tolerance);
+    
+    // Collect filled cell polygons
+    const cells = [];
+    for (let i = 0; i < plan.length; i++) {
+      if (plan[i]) {
+        cells.push(gridPoints[i]);
+      }
+    }
+    
+    // Get circumference of filled cells
+    return this.getBuildingCircumference(cells);
+  }
+
+
+  getBuildingPlan(cols, rows, fillFactor = 0.5) {
+    const total = cols * rows;
+    const plan = new Array(total).fill(false);
+    
+    // Start with random cell
+    let x = Math.floor(Random.float() * cols);
+    let y = Math.floor(Random.float() * rows);
+    plan[x + y * cols] = true;
+    
+    let remaining = total - 1;
+    let minX = x, maxX = x, minY = y, maxY = y;
+    
+    // Grow randomly adjacent to existing cells
+    while (true) {
+      x = Math.floor(Random.float() * cols);
+      y = Math.floor(Random.float() * rows);
+      const idx = x + y * cols;
+      
+      if (!plan[idx]) {
+        // Check if adjacent to existing cell
+        const hasNeighbor = 
+          (x > 0 && plan[idx - 1]) ||
+          (y > 0 && plan[idx - cols]) ||
+          (x < cols - 1 && plan[idx + 1]) ||
+          (y < rows - 1 && plan[idx + cols]);
+        
+        if (hasNeighbor) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          plan[idx] = true;
+          remaining--;
+        }
+      }
+      
+      // Check termination
+      const notAtEdge = minX > 0 || maxX < cols - 1 || minY > 0 || maxY < rows - 1;
+      if (!notAtEdge && (remaining === 0 || Random.float() >= fillFactor)) {
+        break;
+      }
+    }
+    
+    return plan;
+  }
+
+
+  getBuildingPlanFront(cols, rows) {
+    const total = cols * rows;
+    const plan = new Array(total).fill(false);
+    
+    // Fill entire front row
+    for (let x = 0; x < cols; x++) {
+      plan[x] = true;
+    }
+    
+    let remaining = total - cols;
+    let maxY = 0;
+    
+    // Grow backward from front
+    while (true) {
+      const x = Math.floor(Random.float() * cols);
+      const y = Math.floor(1 + Random.float() * (rows - 1));
+      const idx = x + y * cols;
+      
+      if (!plan[idx]) {
+        const hasNeighbor = 
+          (x > 0 && plan[idx - 1]) ||
+          (y > 0 && plan[idx - cols]) ||
+          (x < cols - 1 && plan[idx + 1]) ||
+          (y < rows - 1 && plan[idx + cols]);
+        
+        if (hasNeighbor) {
+          maxY = Math.max(maxY, y);
+          plan[idx] = true;
+          remaining--;
+        }
+      }
+      
+      const done = maxY >= rows - 1 ?
+        (remaining === 0 || Random.float() >= 0.5) :
+        false;
+      
+      if (done) break;
+    }
+    
+    return plan;
+  }
+
+  getBuildingPlanSym(cols, rows) {
+    const plan = this.getBuildingPlan(cols, rows, 0);
+    
+    // Mirror horizontally
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const idx = y * cols + x;
+        const mirrorIdx = (y + 1) * cols - 1 - x;
+        const filled = plan[idx] || plan[mirrorIdx];
+        plan[idx] = filled;
+        plan[mirrorIdx] = filled;
+      }
+    }
+    
+    return plan;
+  }
+
+
+  createBuildingGrid(rect, cols, rows, tolerance) {
+    if (rect.length !== 4) throw new Error("Not a quadrangle!");
+    
+    tolerance = tolerance || 0;
+    
+    // Create grid point coordinates
+    const uCoords = [];
+    for (let i = 0; i <= cols; i++) {
+      uCoords.push(i / cols);
+    }
+    const vCoords = [];
+    for (let i = 0; i <= rows; i++) {
+      vCoords.push(i / rows);
+    }
+    
+    // Apply random jitter if tolerance > 0
+    if (tolerance > 0) {
+      for (let i = 1; i < cols; i++) {
+        const jitter = ((Random.float() + Random.float() + Random.float()) / 3 - 0.5) / (cols - 1) * tolerance;
+        uCoords[i] += jitter;
+      }
+      for (let i = 1; i < rows; i++) {
+        const jitter = ((Random.float() + Random.float() + Random.float()) / 3 - 0.5) / (rows - 1) * tolerance;
+        vCoords[i] += jitter;
+      }
+    }
+    
+    // Create grid of points using bilinear interpolation
+    const gridPoints = [];
+    for (let j = 0; j <= rows; j++) {
+      const row = [];
+      const v = vCoords[j];
+      const left = this.lerpPoint(rect[0], rect[3], v);
+      const right = this.lerpPoint(rect[1], rect[2], v);
+      
+      for (let i = 0; i <= cols; i++) {
+        const u = uCoords[i];
+        row.push(this.lerpPoint(left, right, u));
+      }
+      gridPoints.push(row);
+    }
+    
+    // Create cell quads from grid points
+    const cells = [];
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        cells.push([
+          gridPoints[j][i],
+          gridPoints[j][i + 1],
+          gridPoints[j + 1][i + 1],
+          gridPoints[j + 1][i]
+        ]);
+      }
+    }
+    
+    return cells;
+  }
+
+  /**
+   * Bilinear interpolation on rectangle
+   */
+  lerpRect(rect, u, v) {
+    const top = this.lerpPoint(rect[0], rect[1], u);
+    const bottom = this.lerpPoint(rect[3], rect[2], u);
+    return this.lerpPoint(top, bottom, v);
+  }
+
+  lerpPoint(a, b, t) {
+    return new Point(
+      a.x + (b.x - a.x) * t,
+      a.y + (b.y - a.y) * t
+    );
+  }
+
+
+  getBuildingCircumference(cells) {
+    if (cells.length === 0) return [];
+    if (cells.length === 1) return cells[0];
+    
+
+    const edges = [];
+    const edgeRev = [];
+    
+    for (const cell of cells) {
+      for (let i = 0; i < cell.length; i++) {
+        const p1 = cell[i];
+        const p2 = cell[(i + 1) % cell.length];
+        
+        let found = false;
+        let searchIdx = 0;
+        while (true) {
+          let idx = -1;
+          for (let j = searchIdx; j < edges.length; j++) {
+            if (edges[j] === p2) {
+              idx = j;
+              break;
+            }
+          }
+          
+          if (idx === -1) break;
+          
+          if (edgeRev[idx] === p1) {
+            // Remove internal edge
+            edges.splice(idx, 1);
+            edgeRev.splice(idx, 1);
+            found = true;
+            break;
+          } else {
+            searchIdx = idx + 1;
+          }
+        }
+        
+        if (!found) {
+          edges.push(p1);
+          edgeRev.push(p2);
+        }
+      }
+    }
+    
+    if (edges.length === 0) return [];
+    
+    // Find starting point (any point that appears multiple times in edges)
+    let startIdx = 0;
+    for (let i = 0; i < edges.length; i++) {
+      let count = 0;
+      for (let j = 0; j < edges.length; j++) {
+        if (edges[j] === edges[i]) count++;
+      }
+      if (count > 1) {
+        startIdx = i;
+        break;
+      }
+    }
+    
+    // Build outline by following edges
+    let current = edges[startIdx];
+    let next = edgeRev[startIdx];
+    const outline = [current];
+    
+    while (next !== current) {
+      outline.push(next);
+      let idx = -1;
+      for (let i = 0; i < edges.length; i++) {
+        if (edges[i] === next) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx === -1) break;
+      next = edgeRev[idx];
+    }
+
+    const simplified = [];
+    for (let i = 0; i < outline.length; i++) {
+      const prev = outline[(i - 1 + outline.length) % outline.length];
+      const curr = outline[i];
+      const next = outline[(i + 1) % outline.length];
+      
+      const v1 = {x: curr.x - prev.x, y: curr.y - prev.y};
+      const v2 = {x: next.x - curr.x, y: next.y - curr.y};
+      const len1 = v1.x * v1.x + v1.y * v1.y;
+      const len2 = v2.x * v2.x + v2.y * v2.y;
+      
+      if (len1 > 1e-18 && len2 > 1e-18) {
+        const dot = (v1.x * v2.x + v1.y * v2.y) / Math.sqrt(len1 * len2);
+        if (dot < 0.999) {
+          simplified.push(curr);
+        }
+      }
+    }
+    
+    return simplified.length > 0 ? simplified : outline;
+  }
+
+  polygonArea(poly) {
+    let area = 0;
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % n];
+      area += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(area) / 2;
   }
 
   createAlleys(polygon, minSq, gridChaos, sizeChaos, split, depth = 0) {
@@ -1960,30 +3295,39 @@ class Ward {
    * Simplify polygon by removing near-collinear points
    */
   simplifyPolygon(polygon) {
-    const simplified = [];
+ 
+    // Finds the vertex that forms the smallest triangle area with its neighbors and removes it
+    if (polygon.length < 3) return polygon;
+    
+    let minIndex = -1;
+    let minArea = Infinity;
     const n = polygon.length;
     
+    let prev = polygon[n - 2];
+    let curr = polygon[n - 1];
+    
     for (let i = 0; i < n; i++) {
-      const prev = polygon[(i - 1 + n) % n];
-      const curr = polygon[i];
-      const next = polygon[(i + 1) % n];
+      const next = polygon[i];
       
-      const v1 = {x: curr.x - prev.x, y: curr.y - prev.y};
-      const v2 = {x: next.x - curr.x, y: next.y - curr.y};
-      const len1 = Math.hypot(v1.x, v1.y);
-      const len2 = Math.hypot(v2.x, v2.y);
+      // Calculate triangle area using cross product formula
+      const area = Math.abs(
+        prev.x * (curr.y - next.y) + 
+        curr.x * (next.y - prev.y) + 
+        next.x * (prev.y - curr.y)
+      );
       
-      if (len1 < 0.01 || len2 < 0.01) continue;
-      
-      const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
-      
-      // Keep point if not collinear (dot < 0.999)
-      if (dot < 0.999) {
-        simplified.push(curr);
+      if (area < minArea) {
+        minArea = area;
+        minIndex = (i === 0) ? n - 1 : i - 1;
       }
+      
+      prev = curr;
+      curr = next;
     }
     
-    return simplified.length >= 3 ? simplified : polygon;
+    // Remove the vertex with smallest triangle area and return the modified polygon
+    polygon.splice(minIndex, 1);
+    return polygon;
   }
 
 
@@ -2329,7 +3673,7 @@ class Ward {
         const p1 = cell[i];
         const p2 = cell[(i + 1) % cell.length];
         
-        // Create edge key (normalized)
+        // Create edge key (normalised)
         const key = this.edgeKey(p1, p2);
         
         if (edgeMap.has(key)) {
@@ -3342,7 +4686,7 @@ class Park extends Ward {
   }
 }
 
-// Initialize Perlin noise for tree distribution if not already done
+// Initialise Perlin noise for tree distribution if not already done
 if (typeof PerlinNoise === 'undefined') {
   var PerlinNoise = {
     noise: function(x, y) {
@@ -3814,10 +5158,7 @@ class CityModel {
 
   constructor(nPatches, seed) {
     this.nPatches = Math.max(nPatches || 15, 4); // Minimum 4 patches to avoid edge cases
-    
-    if (seed > 0) {
-      Random.reset(seed);
-    }
+    this.seed = seed; // Store seed for retries
     
     this.plazaNeeded = StateManager.plazaNeeded;
     this.citadelNeeded = StateManager.citadelNeeded;
@@ -3847,23 +5188,28 @@ class CityModel {
 
     while (coastRetry <= maxCoastRetry) {
       try {
-        this.build();
+        // Reset random seed on each attempt to get consistent city structure
+        if (this.seed > 0) {
+          Random.reset(this.seed);
+        }
+        
+        this.build(coastRetry);
         this.validateCity();
         CityModel.instance = this;
         break;
       } catch (e) {
         const msg = e && e.message ? String(e.message) : '';
-        if (msg.includes('RETRY_COAST') && this.coastNeeded) {
+        if (msg.includes('RETRY_COAST')) {
           coastRetry++;
-          console.warn(`City validation requested coastal retry (attempt ${coastRetry}/${maxCoastRetry})`);
-          // Push coastline further away and slightly enlarge for next build
-          this.baseWaterRadius = (this.baseWaterRadius || 20) * 1.2;
-          // Rebuild from scratch with same seed but updated coast parameters
+          console.warn(`City validation requested retry (attempt ${coastRetry}/${maxCoastRetry}): ${msg}`);
+          // Reset seed and rebuild from scratch - retryAttempt will push water further away
           this.patches = [];
           this.inner = [];
           this.streets = [];
           this.gates = [];
           this.bridges = [];
+          this.plaza = null;
+          this.citadel = null;
           continue;
         }
 
@@ -3874,10 +5220,10 @@ class CityModel {
     }
   }
 
-  build() {
-    this.buildPatches();
+  build(retryAttempt = 0) {
+    this.buildPatches(retryAttempt);
     this.buildWalls();
-    // Build DCEL after walls are finalized so edge types use final membership
+    // Build DCEL after walls are finalised so edge types use final membership
     this.buildDCEL();
     // Optional river and/or canal (can have both)
     if (this.riverNeeded) {
@@ -3980,7 +5326,7 @@ class CityModel {
     }
   }
 
-  buildPatches() {
+  buildPatches(retryAttempt = 0) {
     const sa = Random.float() * 2 * Math.PI;
     const points = [];
     const cellChaos = StateManager.cellChaos || 0.0;
@@ -4032,11 +5378,11 @@ class CityModel {
     }
     this.cityRadius = tempRadius;
     
-    console.log(`coastNeeded=${this.coastNeeded}, StateManager.coast=${StateManager.coast}`);
+    console.log(`coastNeeded=${this.coastNeeded}, retryAttempt=${retryAttempt}`);
     
-    // Single-pass waterbody marking; coastal retries are driven by validation instead
+    // Pass retry attempt to water marking so it can push water further away on retries
     if (this.coastNeeded) {
-      this.markWaterCells(0);
+      this.markWaterCells(retryAttempt);
     }
     
     const waterCount = this.patches.filter(p => p.waterbody).length;
@@ -4072,6 +5418,15 @@ class CityModel {
       }
       
       count++;
+    }
+    
+    // Validate plaza placement - if it's underwater or can't be placed, we need to retry with different coast
+    if (this.plazaNeeded) {
+      if (!this.plaza || this.plaza.waterbody) {
+        // Plaza requested but first patch is underwater - need to push water further away
+        console.warn('Plaza requested but center patch is underwater - triggering coastal retry');
+        throw new Error('RETRY_COAST');
+      }
     }
     
     // Recalculate city radius from actual inner patches
@@ -4257,40 +5612,39 @@ class CityModel {
     
     const bounds = this.cityRadius * 1.5;
     
+    // Calculate or recalculate water size on EVERY attempt (no caching)
+    // This allows water to be repositioned and resized on retries
+    let baseWaterRadius;
+    const sizeRoll = Random.float();
+    if (sizeRoll < 0.3) {
+      // Small: 1-3 patches
+      baseWaterRadius = this.cityRadius * (0.15 + Random.float() * 0.25);
+    } else if (sizeRoll < 0.6) {
+      // Medium: 3-6 patches
+      baseWaterRadius = this.cityRadius * (0.4 + Random.float() * 0.3);
+    } else if (sizeRoll < 0.85) {
+      // Large: 6-10 patches
+      baseWaterRadius = this.cityRadius * (0.7 + Random.float() * 0.4);
+    } else {
+      // HUGE: 10-20+ patches (massive coastline)
+      baseWaterRadius = this.cityRadius * (1.1 + Random.float() * 0.6);
+    }
+
+    // Enforce a minimum coastline radius so tiny blobs don't appear
+    if (baseWaterRadius < 20) {
+      baseWaterRadius = 20;
+    }
+    
     // Random rotation for water orientation
     const angle = Random.float() * Math.PI * 2;
     const cos_a = Math.cos(angle);
     const sin_a = Math.sin(angle);
-    
-    // On first attempt, roll a base coastline size and cache it.
-    // All retries grow from this base so radius only ever increases.
-    if (!this.baseWaterRadius) {
-      const sizeRoll = Random.float();
-      if (sizeRoll < 0.3) {
-        // Small: 1-3 patches
-        this.baseWaterRadius = this.cityRadius * (0.15 + Random.float() * 0.25);
-      } else if (sizeRoll < 0.6) {
-        // Medium: 3-6 patches
-        this.baseWaterRadius = this.cityRadius * (0.4 + Random.float() * 0.3);
-      } else if (sizeRoll < 0.85) {
-        // Large: 6-10 patches
-        this.baseWaterRadius = this.cityRadius * (0.7 + Random.float() * 0.4);
-      } else {
-        // HUGE: 10-20+ patches (massive coastline)
-        this.baseWaterRadius = this.cityRadius * (1.1 + Random.float() * 0.6);
-      }
-
-      // Enforce a minimum coastline radius so tiny blobs don't appear
-      if (this.baseWaterRadius < 20) {
-        this.baseWaterRadius = 20;
-      }
-    }
 
     // Push water further from center on each retry attempt, and make it noticeably bigger
     // Radius grows linearly with attempt index so you can see it in logs/visuals
     const retryOffset = retryAttempt * 0.3;           // Each retry pushes 30% further
     const retrySizeIncrease = retryAttempt * 0.5;     // Each retry makes it 50% bigger
-    let waterRadius = this.baseWaterRadius * (1.0 + retrySizeIncrease);
+    let waterRadius = baseWaterRadius * (1.0 + retrySizeIncrease);
 
     // Clamp to a sane maximum so it doesn't explode to infinity
     const MAX_COAST_RADIUS = 15000;
@@ -4539,7 +5893,7 @@ class CityModel {
           for (const waterBody of this.waterBodies) {
             // Check if inside water
             if (this.isPointInPolygon(v, waterBody)) {
-              minWaterDist = -1000; // heavily penalize underwater
+              minWaterDist = -1000; // heavily penalise underwater
               break;
             }
             // Distance to nearest water edge
@@ -6281,7 +7635,7 @@ class CityModel {
   }
 
   createWards() {
-    // Ward types similar to original - weighted array
+
     const wardTypes = [
       'craftsmen', 'craftsmen', 'merchant', 'craftsmen', 'craftsmen', 'cathedral',
       'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen',
@@ -6497,7 +7851,7 @@ class CityModel {
         const radialMaxRadius = maxRadius * 10;
         
         while (currentRadius < radialMaxRadius) {
-          const normalizedDist = (currentRadius - this.cityRadius) / (maxRadius - this.cityRadius);
+          const normalisedDist = (currentRadius - this.cityRadius) / (maxRadius - this.cityRadius);
           
           // Current position
           const x = cityCenter.x + Math.cos(currentAngle) * currentRadius;
@@ -6506,10 +7860,10 @@ class CityModel {
           
           // Distance from this street for arc fade
           const distFromStreet = Point.distance(currentPos, roadPos);
-          const normalizedStreetDist = distFromStreet / maxRadius;
+          const normalisedStreetDist = distFromStreet / maxRadius;
           
           // Arcs fade RADIALLY from streets - much faster falloff
-          const arcFadeProb = Math.pow(1 - normalizedStreetDist, 2.5);
+          const arcFadeProb = Math.pow(1 - normalisedStreetDist, 2.5);
           
           // Check if we're crossing an arc ring
           let nearRing = null;
@@ -6629,7 +7983,7 @@ class CityModel {
       
       // Find distance from city center for fade
       const distFromCity = Point.distance(c, cityCenter);
-      const normalizedCityDist = (distFromCity - this.cityRadius) / (maxRadius - this.cityRadius);
+      const normalisedCityDist = (distFromCity - this.cityRadius) / (maxRadius - this.cityRadius);
       
       // Place shanty based on hierarchy: streets > alleys near streets > alleys far from streets
       // Find nearest street (non-alley road)
@@ -6655,7 +8009,7 @@ class CityModel {
       // Priority 1: Near streets (very high priority)
       if (minStreetDist < streetThreshold) {
         const streetProximity = 1 - (minStreetDist / streetThreshold);
-        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.5);
+        const cityFade = Math.pow(1 - Math.min(1, normalisedCityDist), 0.5);
         probability = Math.pow(streetProximity, 0.4) * cityFade * 0.7 * cityDistBoost;
       }
       // Priority 2: Near alleys that are close to streets (medium priority)
@@ -6672,13 +8026,13 @@ class CityModel {
         }
         
         const alleyStreetProximity = 1 - Math.min(1, alleyToStreetDist / (maxRadius * 0.3));
-        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.7);
+        const cityFade = Math.pow(1 - Math.min(1, normalisedCityDist), 0.7);
         probability = Math.pow(alleyProximity, 0.5) * alleyStreetProximity * cityFade * 0.45 * cityDistBoost;
       }
       // Priority 3: Near alleys far from streets (low priority)
       else if (minPathDist < alleyThreshold) {
         const alleyProximity = 1 - (minPathDist / alleyThreshold);
-        const cityFade = Math.pow(1 - Math.min(1, normalizedCityDist), 0.9);
+        const cityFade = Math.pow(1 - Math.min(1, normalisedCityDist), 0.9);
         probability = Math.pow(alleyProximity, 0.7) * cityFade * 0.25 * cityDistBoost;
       }
       
@@ -7806,7 +9160,7 @@ class CityRenderer {
   }
 
   /**
-   * Classic rendering (original implementation)
+   * Classic rendering
    */
   renderClassic() {
     const ctx = this.ctx;
@@ -8720,13 +10074,13 @@ class CityRenderer {
       'military': '#8B0000'        // Dark red
     };
     
-    // Try class name first (normalized to lowercase)
+    // Try class name first (normalised to lowercase)
     const wardClassName = ward.constructor.name.toLowerCase();
     if (colours[wardClassName]) {
       return colours[wardClassName];
     }
     
-    // Fall back to wardType property (normalized to lowercase)
+    // Fall back to wardType property (normalised to lowercase)
     if (ward.wardType) {
       const wardType = ward.wardType.toLowerCase();
       if (colours[wardType]) {
@@ -9925,10 +11279,10 @@ class Namer {
       return Random.choice(this.prefixes) + Random.choice(this.roots);
     } else if (Random.chance(0.5)) {
       // Just root
-      return this.capitalize(Random.choice(this.roots));
+      return this.capitalise(Random.choice(this.roots));
     } else {
       // Root + suffix
-      return this.capitalize(Random.choice(this.roots)) + Random.choice(this.suffixes);
+      return this.capitalise(Random.choice(this.roots)) + Random.choice(this.suffixes);
     }
   }
   
@@ -9955,7 +11309,7 @@ class Namer {
     return base;
   }
   
-  static capitalize(str) {
+  static capitalise(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
 }
@@ -9998,7 +11352,7 @@ class Focus {
         const p1 = points[i];
         const p2 = points[(i + 1) % points.length];
         
-        // Add edge (normalized to avoid duplicates)
+        // Add edge (normalised to avoid duplicates)
         const edgeKey = `${Math.min(p1.x, p2.x)},${Math.min(p1.y, p2.y)}-${Math.max(p1.x, p2.x)},${Math.max(p1.y, p2.y)}`;
         edgeSet.add(edgeKey);
         
@@ -10585,10 +11939,10 @@ class FormalMap {
     this.focusView = null;
     this.cityTitle = city.cityTitle || null;
     
-    this.initialize();
+    this.initialise();
   }
   
-  initialize() {
+  initialise() {
     // Create patch views for all wards
     if (this.city.wards) {
       for (const ward of this.city.wards) {
