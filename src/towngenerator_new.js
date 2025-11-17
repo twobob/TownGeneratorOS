@@ -26,6 +26,13 @@ const POLYGON_SMOOTHING_PASSES = 3;  // Default number of Laplacian smoothing pa
 const APPLY_URQUHART_GRAPH = false;  // Apply Urquhart graph filtering to Delaunay triangulation
                                     // Removes longest edge from each triangle, creating a sparser graph
 
+// Coast/Water Configuration
+const MIN_COAST_RADIUS = 20;         // Minimum radius for coastline water bodies (diameter = 2x this value)
+                                     // Prevents tiny water blobs from appearing
+const MIN_COAST_DISTANCE_MULTIPLIER = 3.0;  // Minimum distance from city center as multiplier of cityRadius
+                                            // Coast will be placed at least (cityRadius * this value) away
+const MAX_COAST_RADIUS = 15000;      // Maximum radius for coastline to prevent performance issues
+
 // ============================================================================
 // Utility Classes
 // ============================================================================
@@ -2199,12 +2206,14 @@ class Ward {
 
   createLots(partitionedPolys, minSq) {
     const lots = [];
+    let excludedCount = 0;
     
     for (const poly of partitionedPolys) {
       const area = this.polygonArea(poly);
       
       // Filter out too-small lots
       if (poly.length < 4 || area < minSq / 4) {
+        excludedCount++;
         continue;
       }
       
@@ -2218,7 +2227,14 @@ class Ward {
       // Require decent rectangularity and minimum dimensions
       if (width >= 1.2 && height >= 1.2 && fillRatio > 0.5) {
         lots.push(poly);
+      } else {
+        excludedCount++;
       }
+    }
+    
+    // Log if entire lot was excluded
+    if (excludedCount > 0 && lots.length === 0 && partitionedPolys.length > 0) {
+      console.warn(`Lot creation: Entire lot excluded - all ${partitionedPolys.length} polygons filtered out (too small or non-rectangular)`);
     }
     
     return lots;
@@ -2934,7 +2950,8 @@ class Ward {
     }
 
     const variance = (Random.float() + Random.float() + Random.float() + Random.float()) / 2 - 1;
-    const minAreaThreshold = minSq * Math.pow(2, Math.abs(variance) * sizeChaos);
+    // Ensure sizeChaos is treated properly: 0 means uniform sizing (no variation)
+    const minAreaThreshold = sizeChaos > 0 ? minSq * Math.pow(2, Math.abs(variance) * sizeChaos) : minSq;
     
     if (area0 < minAreaThreshold) {
       // Area is small enough - this becomes a building lot
@@ -5242,6 +5259,24 @@ class CityModel {
         break;
       }
     }
+    
+    // If plaza was requested but still not assigned after all retries, force it into closest dry patch
+    if (this.plazaNeeded && !this.plaza && this.patches.length > 0) {
+      const dryPatches = this.patches.filter(p => !p.waterbody && p.withinCity);
+      if (dryPatches.length > 0) {
+        this.plaza = dryPatches.reduce((closest, p) => {
+          const closestCenter = Polygon.centroid(closest.shape);
+          const pCenter = Polygon.centroid(p.shape);
+          const closestDist = closestCenter.x * closestCenter.x + closestCenter.y * closestCenter.y;
+          const pDist = pCenter.x * pCenter.x + pCenter.y * pCenter.y;
+          return pDist < closestDist ? p : closest;
+        });
+        console.warn('Plaza retries exhausted - forcing plaza placement in closest dry patch');
+      } else {
+        console.error('Plaza requested but NO dry patches available - disabling plaza');
+        this.plazaNeeded = false;
+      }
+    }
   }
 
   build(retryAttempt = 0) {
@@ -5416,6 +5451,48 @@ class CityModel {
     // Extract water body polygons BEFORE assigning citadel so we can check overlaps
     this.extractWaterBodies();
     
+    // Check if the ACTUAL first patch (closest to origin) is underwater BEFORE assigning plaza
+    if (this.plazaNeeded && this.patches.length > 0) {
+      // Find the geometrically closest patch to origin (0,0)
+      const centerPatch = this.patches.reduce((closest, p) => {
+        const closestCenter = Polygon.centroid(closest.shape);
+        const pCenter = Polygon.centroid(p.shape);
+        const closestDist = closestCenter.x * closestCenter.x + closestCenter.y * closestCenter.y;
+        const pDist = pCenter.x * pCenter.x + pCenter.y * pCenter.y;
+        return pDist < closestDist ? p : closest;
+      });
+      
+      // If the TRUE center patch is underwater, we MUST retry
+      if (centerPatch.waterbody) {
+        console.warn(`Plaza requested but TRUE center patch (dist ${Math.sqrt(Polygon.centroid(centerPatch.shape).x ** 2 + Polygon.centroid(centerPatch.shape).y ** 2).toFixed(1)}) is underwater - triggering coastal retry`);
+        throw new Error('RETRY_COAST');
+      }
+    }
+    
+    // Check if urban castle area is underwater (second closest patch to origin)
+    if (StateManager.urbanCastle && this.patches.length > 1) {
+      // Get dry patches sorted by distance from center (closest first)
+      // NOTE: At this point withinCity hasn't been set yet, so we can't filter by it
+      // We just check the closest dry patches to ensure castle area isn't underwater
+      const innerDryPatches = this.patches
+        .filter(p => !p.waterbody)
+        .sort((a, b) => {
+          const ca = Polygon.centroid(a.shape);
+          const cb = Polygon.centroid(b.shape);
+          const distA = ca.x * ca.x + ca.y * ca.y;
+          const distB = cb.x * cb.x + cb.y * cb.y;
+          return distA - distB;
+        })
+        .slice(0, Math.max(this.nPatches, 20)); // Only check within reasonable city radius
+      
+      // Check if we have at least 2 dry patches near center (one for plaza, one for castle)
+      const needsCentralPatches = this.plazaNeeded ? 2 : 1;
+      if (innerDryPatches.length < needsCentralPatches) {
+        console.warn(`Urban castle requested but insufficient dry central patches (only ${innerDryPatches.length} of ${needsCentralPatches} needed) - triggering coastal retry`);
+        throw new Error('RETRY_COAST');
+      }
+    }
+    
     // Now assign city roles to patches (excluding waterbodies)
     let count = 0;
     for (const patch of this.patches) {
@@ -5442,15 +5519,6 @@ class CityModel {
       }
       
       count++;
-    }
-    
-    // Validate plaza placement - if it's underwater or can't be placed, we need to retry with different coast
-    if (this.plazaNeeded) {
-      if (!this.plaza || this.plaza.waterbody) {
-        // Plaza requested but first patch is underwater - need to push water further away
-        console.warn('Plaza requested but center patch is underwater - triggering coastal retry');
-        throw new Error('RETRY_COAST');
-      }
     }
     
     // Recalculate city radius from actual inner patches
@@ -5655,35 +5723,37 @@ class CityModel {
     }
 
     // Enforce a minimum coastline radius so tiny blobs don't appear
-    if (baseWaterRadius < 20) {
-      baseWaterRadius = 20;
+    if (baseWaterRadius < MIN_COAST_RADIUS) {
+      baseWaterRadius = MIN_COAST_RADIUS;
     }
     
     // Random rotation for water orientation
-    const angle = Random.float() * Math.PI * 2;
+    // On retries, rotate angle by 45° each time to try different positions (max 8 attempts = 360°)
+    const baseAngle = Random.float() * Math.PI * 2;
+    const angle = baseAngle + (retryAttempt * Math.PI / 4); // +45° per retry
     const cos_a = Math.cos(angle);
     const sin_a = Math.sin(angle);
 
-    // Push water further from center on each retry attempt, and make it noticeably bigger
-    // Radius grows linearly with attempt index so you can see it in logs/visuals
-    const retryOffset = retryAttempt * 0.3;           // Each retry pushes 30% further
-    const retrySizeIncrease = retryAttempt * 0.5;     // Each retry makes it 50% bigger
-    let waterRadius = baseWaterRadius * (1.0 + retrySizeIncrease);
+    // Push water MUCH further from center on each retry attempt
+    // Start at MIN_COAST_DISTANCE_MULTIPLIER * city radius, then add 2x radius per retry attempt
+    const waterOffsetDist = this.cityRadius * (MIN_COAST_DISTANCE_MULTIPLIER + retryAttempt * 2.0);
+    
+    // Water size stays constant - don't scale with distance (causes wrapping at large distances)
+    let waterRadius = baseWaterRadius;
 
     // Clamp to a sane maximum so it doesn't explode to infinity
-    const MAX_COAST_RADIUS = 15000;
     if (waterRadius > MAX_COAST_RADIUS) {
       waterRadius = MAX_COAST_RADIUS;
     }
-    
-    const waterOffsetDist = this.cityRadius * (0.3 + Random.float() * 0.4 + retryOffset);
     const waterCenter = new Point(
       Math.cos(angle) * waterOffsetDist,
       Math.sin(angle) * waterOffsetDist
     );
     
+    console.log(`Water: cityRadius=${this.cityRadius.toFixed(1)}, baseWaterRadius=${baseWaterRadius.toFixed(1)}, offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x), finalRadius=${waterRadius.toFixed(1)}, retry=${retryAttempt}`);
+    
     if (retryAttempt > 0) {
-      console.log(`Water placement attempt ${retryAttempt}: offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x radius), waterRadius=${waterRadius.toFixed(1)}, angle=${(angle * 180 / Math.PI).toFixed(1)}°`);
+      console.log(`Water placement attempt ${retryAttempt}: offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x radius), waterRadius=${waterRadius.toFixed(1)}, angle=${(angle * 180 / Math.PI).toFixed(1)}° (rotated ${(retryAttempt * 45).toFixed(0)}° from base)`);
     }
     
     // Mark cells as waterbodies based on distance and noise
@@ -7660,13 +7730,14 @@ class CityModel {
 
   createWards() {
 
+    // Ward types for inside city walls - no slums allowed inside
     const wardTypes = [
       'craftsmen', 'craftsmen', 'merchant', 'craftsmen', 'craftsmen', 'cathedral',
       'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen',
       'craftsmen', 'craftsmen', 'craftsmen', 'administration', 'craftsmen',
-      'slum', 'craftsmen', 'slum', 'patriciate', 'market',
-      'slum', 'craftsmen', 'craftsmen', 'craftsmen', 'slum',
-      'craftsmen', 'craftsmen', 'craftsmen', 'military', 'slum',
+      'military', 'craftsmen', 'patriciate', 'patriciate', 'market',
+      'merchant', 'craftsmen', 'craftsmen', 'craftsmen', 'military',
+      'craftsmen', 'craftsmen', 'craftsmen', 'military', 'patriciate',
       'craftsmen', 'park', 'patriciate', 'market', 'merchant'
     ];
     
@@ -7700,14 +7771,17 @@ class CityModel {
     };
 
     // Plaza if needed - avoid water
-    if (this.plaza && !overlapsWater(this.plaza)) {
-      this.plaza.ward = new Plaza(this, this.plaza);
-    } else if (this.plaza && overlapsWater(this.plaza)) {
-      // Find alternate plaza patch
-      const alternatePlaza = innerPatches.find(p => !p.ward && !overlapsWater(p));
-      if (alternatePlaza) {
-        this.plaza = alternatePlaza;
+    if (this.plaza) {
+      const overlaps = overlapsWater(this.plaza);
+      if (!overlaps) {
         this.plaza.ward = new Plaza(this, this.plaza);
+      } else {
+        // Find alternate plaza patch
+        const alternatePlaza = innerPatches.find(p => !p.ward && !overlapsWater(p));
+        if (alternatePlaza) {
+          this.plaza = alternatePlaza;
+          this.plaza.ward = new Plaza(this, this.plaza);
+        }
       }
     }
 
@@ -8553,18 +8627,19 @@ class CityModel {
 // COLOR PALETTE - Easy to customize colors
 // ============================================================================
 class Palette {
-  // Base colors
-  static paper = '#F3EDE2';           // Background/paper color
-  static light = '#C9B896';           // Light tan/brown for buildings and terrain
-  static dark = '#2B2416';            // Dark brown for outlines and details
-  static roof = '#8B7355';            // Brown roof color
+  // Base colors - these get tinting applied at initialization
+  static _baseRoof = '#8B7355';       // Base brown roof color before tinting
+  static paper = '#F3EDE2';           // Background/paper color (matches UI default)
+  static light = '#E1DBD5';           // Roads color (matches UI default)
+  static dark = '#2B2416';            // Ink color for outlines/walls (matches UI default)
+  static roof = '#8B7355';            // Roofs color (matches UI default, gets tinting applied)
   
   // Terrain colors
   static terrainBase = 'hsl(85, 30%, 80%)';  // Light greenish base terrain
   static farmGreen = '#a7ae89ff';            // Light green for farms outside city
   
   // Water colors
-  static water = '#4A7C59';           // Dark green for water
+  static water = '#4A7C59';           // Water color (matches UI default)
   static waterDeep = '#3A6B49';       // Deeper water color
   static sand = '#E8DCC8';            // Sand/beach color
   
@@ -8579,16 +8654,19 @@ class Palette {
   // District/ward colors
   static plaza = '#D4C5A0';           // Plaza tan/sand
   static citadel = '#C8BCA8';         // Citadel tan/grey
-  static park = '#C8D4A8';            // Park light green
+  static park = '#C8D4A8';            // Greens/park color (matches UI default)
   static defaultWard = '#B8B0A0';     // Default ward color
-  static insideCell = '#E8DCC8';      // Light tan/beige for inside cells
+  static insideCell = '#D8D8CD';      // Elements color (matches UI default)
   
   // Tree colors
-  static tree = '#4A7C59';            // Dark green for trees
+  static tree = '#4A7C59';            // Trees color (matches UI default)
+  
+  // Wall colors
+  static wallColor = '#4C4C4C';       // Wall color (matches UI default)
   
   // Label/text colors
   static labelOutline = '#FFFFFF';    // White outline for labels
-  static labelText = '#5A3312';       // Dark brown label text
+  static labelText = '#662C28';       // Labels color (matches UI default)
   
   // District type colors (for labels/highlighting)
   static districtColors = {
@@ -8711,6 +8789,21 @@ class Palette {
 // Expose Palette globally for color customization
 window.Palette = Palette;
 
+// Apply default tinting to Palette colors on initialization
+(function applyDefaultTinting() {
+  // Apply tinting to roof color based on default UI values (90% strength, 90% weathering)
+  const defaultTintStrength = 90;
+  const defaultTintWeathering = 90;
+  const defaultTintMethod = 'spectrum';
+  
+  Palette.roof = Palette.applyTinting(
+    Palette._baseRoof,
+    defaultTintMethod,
+    defaultTintStrength,
+    defaultTintWeathering
+  );
+})();
+
 class CityRenderer {
   constructor(canvas, model) {
     this.canvas = canvas;
@@ -8729,11 +8822,17 @@ class CityRenderer {
   }
 
   render() {
+    // Clear the entire canvas first to force repaint
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    
     if (StateManager.useViewArchitecture) {
       this.renderWithViews();
     } else {
       this.renderClassic();
     }
+    
+    // Force canvas to repaint by triggering a reflow
+    void this.canvas.offsetHeight;
   }
   
   /**
@@ -8782,7 +8881,12 @@ class CityRenderer {
       this.lastSettings = {
         streetWidth: StateManager.streetWidth,
         buildingGap: StateManager.buildingGap,
-        wallThickness: StateManager.wallThickness
+        wallThickness: StateManager.wallThickness,
+        tintDistricts: StateManager.tintDistricts,
+        weatheredRoofs: StateManager.weatheredRoofs,
+        tintStrength: StateManager.tintStrength,
+        tintWeathering: StateManager.tintWeathering,
+        tintMethod: StateManager.tintMethod
       };
     } else {
       // Update settings on existing FormalMap and propagate to child views
@@ -8920,11 +9024,11 @@ class CityRenderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = Palette.labelOutline;
       ctx.lineWidth = 5;
       ctx.lineJoin = 'round';
       ctx.strokeText(title, titleX, titleY);
-      ctx.fillStyle = '#5A3312';
+      ctx.fillStyle = Palette.labelText;
       ctx.fillText(title, titleX, titleY);
       ctx.restore();
     }
@@ -9226,7 +9330,12 @@ class CityRenderer {
     return (
       this.lastSettings.streetWidth !== StateManager.streetWidth ||
       this.lastSettings.buildingGap !== StateManager.buildingGap ||
-      this.lastSettings.wallThickness !== StateManager.wallThickness
+      this.lastSettings.wallThickness !== StateManager.wallThickness ||
+      this.lastSettings.tintDistricts !== StateManager.tintDistricts ||
+      this.lastSettings.weatheredRoofs !== StateManager.weatheredRoofs ||
+      this.lastSettings.tintStrength !== StateManager.tintStrength ||
+      this.lastSettings.tintWeathering !== StateManager.tintWeathering ||
+      this.lastSettings.tintMethod !== StateManager.tintMethod
     );
   }
   
@@ -9492,11 +9601,11 @@ class CityRenderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = Palette.labelOutline;
       ctx.lineWidth = 5;
       ctx.lineJoin = 'round';
       ctx.strokeText(cityTitle, titleX, titleY);
-      ctx.fillStyle = '#5A3312';
+      ctx.fillStyle = Palette.labelText;
       ctx.fillText(cityTitle, titleX, titleY);
       ctx.restore();
     }
@@ -9509,7 +9618,7 @@ class CityRenderer {
     for (const obj of watersideObjects) {
       if (obj.type === 'pier' && Array.isArray(obj.shape)) {
         // Draw pier as wooden planks with detail
-        ctx.fillStyle = '#8B7355';
+        ctx.fillStyle = Palette.woodMedium;
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
         ctx.beginPath();
@@ -9522,7 +9631,7 @@ class CityRenderer {
         ctx.stroke();
         
         // Add plank lines for detail
-        ctx.strokeStyle = '#6B5335';
+        ctx.strokeStyle = Palette.woodDark;
         ctx.lineWidth = Math.max(0.15 / safeScale, 0.2);
         const plankSpacing = 1.5;
         const pierDx = obj.shape[1].x - obj.shape[0].x;
@@ -9542,7 +9651,7 @@ class CityRenderer {
         }
       } else if (obj.type === 'boat' && Array.isArray(obj.shape)) {
         // Draw boat with simple hull shape
-        ctx.fillStyle = '#8B6F47';
+        ctx.fillStyle = Palette.woodMedium;
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
         ctx.beginPath();
@@ -9566,7 +9675,7 @@ class CityRenderer {
     for (const {feature, geometry} of features) {
       if (feature === 'dock' && Array.isArray(geometry)) {
         // Draw dock as a wooden platform
-        ctx.fillStyle = '#8B7355';
+        ctx.fillStyle = Palette.roof;
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.3 / safeScale, 0.5);
         ctx.beginPath();
@@ -9579,7 +9688,7 @@ class CityRenderer {
         ctx.stroke();
       } else if (feature === 'post' && geometry.x !== undefined) {
         // Draw mooring post
-        ctx.fillStyle = '#5C4033';
+        ctx.fillStyle = Palette.woodBrown;
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.2 / safeScale, 0.3);
         ctx.beginPath();
@@ -9588,7 +9697,7 @@ class CityRenderer {
         ctx.stroke();
       } else if (feature === 'boat' && Array.isArray(geometry)) {
         // Draw small boat
-        ctx.fillStyle = '#6B4423';
+        ctx.fillStyle = Palette.plankBrown;
         ctx.strokeStyle = Palette.dark;
         ctx.lineWidth = Math.max(0.2 / safeScale, 0.4);
         ctx.beginPath();
@@ -9995,7 +10104,7 @@ class CityRenderer {
       try { ctx.clip('evenodd'); } catch { ctx.clip(); }
     }
 
-    ctx.strokeStyle = Palette.dark;
+    ctx.strokeStyle = Palette.wallColor;
     ctx.lineWidth = wallThickness;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -10413,7 +10522,7 @@ class CityRenderer {
         const a = seg[0] || seg.a, b = seg[1] || seg.b; if (!a || !b) continue;
         const vx=b.x-a.x, vy=b.y-a.y; const len=Math.hypot(vx,vy)||1e-6; const ux=vx/len, uy=vy/len; const nx=-uy, ny=ux;
         // Deck fill
-        ctx.fillStyle = '#C8C5BE';
+        ctx.fillStyle = Palette.light;
         ctx.beginPath();
         ctx.moveTo(a.x - nx*deckW*0.5, a.y - ny*deckW*0.5);
         ctx.lineTo(b.x - nx*deckW*0.5, b.y - ny*deckW*0.5);
@@ -10502,7 +10611,7 @@ class CityRenderer {
       const w = Math.min(width / safeScale, 50);
       
       // Wooden pier deck
-      ctx.fillStyle = '#8B7355';
+      ctx.fillStyle = Palette.roof;
       ctx.beginPath();
       ctx.moveTo(start.x - nx * w * 0.5, start.y - ny * w * 0.5);
       ctx.lineTo(end.x - nx * w * 0.5, end.y - ny * w * 0.5);
@@ -10645,7 +10754,7 @@ class CityRenderer {
     if (!waterBodies || waterBodies.length === 0) return;
     ctx.save();
     
-    const waterColour = '#9dcde2';
+    const waterColour = Palette.water;
 
     for (let wi = 0; wi < waterBodies.length; wi++) {
       const water = waterBodies[wi];
@@ -10724,13 +10833,13 @@ class CityRenderer {
     ctx.textBaseline = 'middle';
     
     // White border/background
-    ctx.strokeStyle = '#FFFFFF';
+    ctx.strokeStyle = Palette.labelOutline;
     ctx.lineWidth = 4 / this.scale;
     ctx.lineJoin = 'round';
     ctx.strokeText(labelText, cx, cy);
     
     // Black text
-    ctx.fillStyle = '#000000';
+    ctx.fillStyle = Palette.dark;
     ctx.fillText(labelText, cx, cy);
     ctx.restore();
   }
@@ -10993,10 +11102,10 @@ class CityRenderer {
       }
       
       // Draw the label at the found position
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = Palette.labelOutline;
       ctx.lineWidth = 5 / this.scale;
       ctx.strokeText(text, foundPosition.pos.x, foundPosition.pos.y);
-      ctx.fillStyle = '#8B4513';
+      ctx.fillStyle = Palette.labelText;
       ctx.fillText(text, foundPosition.pos.x, foundPosition.pos.y);
       
       if (this.labelBBoxes) this.labelBBoxes.push(foundPosition.bbox);
@@ -11036,11 +11145,11 @@ class CityRenderer {
       ctx.save();
       ctx.translate(pos.x, pos.y);
       ctx.rotate(pos.angle);
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = Palette.labelOutline;
       ctx.lineWidth = 3.5 / this.scale;
       ctx.lineJoin = 'round';
       ctx.strokeText(char, 0, 0);
-      ctx.fillStyle = '#5A3312';
+      ctx.fillStyle = Palette.labelText;
       ctx.fillText(char, 0, 0);
       ctx.restore();
     }
@@ -11142,10 +11251,6 @@ class BuildingPainter {
    */
   static paint(ctx, buildings, roofColour, outlineColour, raised = 0.5, scale = 1, wardColourTint = null) {
     // Filter out invalid buildings (triangles or degenerate polygons)
-    const invalidCount = buildings.filter(b => !b || b.length < 4).length;
-    if (invalidCount > 0) {
-      console.warn(`BuildingPainter: Filtered out ${invalidCount} buildings with < 4 vertices`);
-    }
     const validBuildings = buildings.filter(b => b && b.length >= 4);
     if (validBuildings.length === 0) return;
     
@@ -11208,12 +11313,24 @@ class BuildingPainter {
     
     // Draw roofs with slight colour variation
     for (const building of validBuildings) {
-      // Add weathering variation to roof colour
+      // Add weathering variation to roof colour - deterministic based on building position
       let weatheringAmount = 0.1;
       if (StateManager.weatheredRoofs && StateManager.tintWeathering > 0) {
         weatheringAmount = StateManager.tintWeathering / 100;
       }
-      const variance = (Random.float() + Random.float() + Random.float()) / 3 * 2 - 1;
+      
+      // Use building centroid for deterministic variation (not random)
+      let cx = 0, cy = 0;
+      for (const p of building) {
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= building.length;
+      cy /= building.length;
+      
+      // Use sine-based pseudo-random based on position (deterministic)
+      const seed = Math.sin(cx * 12.9898 + cy * 78.233) * 43758.5453;
+      const variance = ((seed - Math.floor(seed)) * 2 - 1); // Range -1 to 1
       const variedRoof = this.scaleColour(baseRoofColour, Math.pow(2, variance * weatheringAmount));
       
       ctx.fillStyle = variedRoof;
@@ -12494,6 +12611,23 @@ class TownGenerator {
 
     // Clear cached trees when regenerating
     this.renderer.globalTrees = null;
+    
+    // Apply default color scheme values from UI before first render
+    const tintStrengthEl = document.getElementById('tint-strength');
+    if (tintStrengthEl) StateManager.tintStrength = parseInt(tintStrengthEl.value);
+    
+    const tintWeatheringEl = document.getElementById('tint-weathering');
+    if (tintWeatheringEl) StateManager.tintWeathering = parseInt(tintWeatheringEl.value);
+    
+    const tintMethodEl = document.getElementById('tint-method');
+    if (tintMethodEl) StateManager.tintMethod = tintMethodEl.value;
+    
+    const tintDistrictsEl = document.getElementById('tint-districts-check');
+    if (tintDistrictsEl) StateManager.tintDistricts = tintDistrictsEl.checked;
+    
+    const weatheredRoofsEl = document.getElementById('weathered-roofs-check');
+    if (weatheredRoofsEl) StateManager.weatheredRoofs = weatheredRoofsEl.checked;
+    
     this.renderer.render();
     
     

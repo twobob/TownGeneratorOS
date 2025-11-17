@@ -271,18 +271,18 @@
           '<label><input type="checkbox" id="show-trees-check" checked> Show Trees</label>' +
           '</div>' +
           '<div class="slider-grid">' +
-          '<label>Grid Chaos: <span id="grid-chaos-value">0.7</span><br>' +
-          '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.7"></label>' +
-          '<label>Size Chaos: <span id="size-chaos-value">0.8</span><br>' +
-          '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.8"></label>' +
-          '<label>Cell Size Chaos: <span id="cell-chaos-value">1.0</span><br>' +
-          '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="1.0"></label>' +
-          '<label>Alley Width: <span id="alley-width-value">2.4</span><br>' +
-          '<input type="range" id="alley-width" min="0" max="3" step="0.2" value="2.4"></label>' +
+          '<label>Grid Chaos: <span id="grid-chaos-value">0.1</span><br>' +
+          '<input type="range" id="grid-chaos" min="0" max="1" step="0.1" value="0.1"></label>' +
+          '<label>Size Chaos: <span id="size-chaos-value">0.1</span><br>' +
+          '<input type="range" id="size-chaos" min="0" max="1" step="0.1" value="0.1"></label>' +
+          '<label>Cell Size Chaos: <span id="cell-chaos-value">0.9</span><br>' +
+          '<input type="range" id="cell-chaos" min="0" max="1" step="0.1" value="0.9"></label>' +
+          '<label>Alley Width: <span id="alley-width-value">0.7</span><br>' +
+          '<input type="range" id="alley-width" min="0" max="3" step="0.1" value="0.7"></label>' +
           '<label>Street Width: <span id="street-width-value">3.5</span><br>' +
           '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="3.5"></label>' +
-          '<label>Building Gap: <span id="building-gap-value">0.2</span><br>' +
-          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="0.2"></label>' +
+          '<label>Building Gap: <span id="building-gap-value">0.9</span><br>' +
+          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="0.9"></label>' +
           '<label>Wall Thickness: <span id="wall-thickness-value">4.0</span><br>' +
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="4.0"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">5%</span><br>' +
@@ -291,8 +291,8 @@
           '<h3>Water</h3>' +
           '<div class="checkbox-grid three-col" id="water-grid">' +
           '<label><input type="checkbox" id="river-check" checked> River</label>' +
-          '<label><input type="checkbox" id="canal-check"> Canal</label>' +
-          '<label><input type="checkbox" id="coast-check" checked> Coast</label>' +
+          '<label><input type="checkbox" id="canal-check" checked> Canal</label>' +
+          '<label><input type="checkbox" id="coast-check" > Coast</label>' +
           '</div>' +
           '<div><button id="regenerate-btn">New Random</button>' +
           '<button id="apply-btn">Apply Settings</button>' +
@@ -312,44 +312,44 @@
           '</div>' +
           '<div class="color-grid" style="display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;margin-bottom:12px;">' +
           '<label style="margin:0;">Paper</label>' +
-          '<input type="text" id="color-paper" value="#F3EDE2" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-paper-pick" value="#F3EDE2" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-paper" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-paper-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Ink</label>' +
-          '<input type="text" id="color-ink" value="#2B2416" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-ink-pick" value="#2B2416" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-ink" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-ink-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Roofs</label>' +
-          '<input type="text" id="color-roofs" value="#8B7355" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-roofs-pick" value="#8B7355" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-roofs" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-roofs-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Water</label>' +
-          '<input type="text" id="color-water" value="#4A7C59" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-water-pick" value="#4A7C59" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-water" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-water-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Greens</label>' +
-          '<input type="text" id="color-greens" value="#C8D4A8" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-greens-pick" value="#C8D4A8" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-greens" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-greens-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Roads</label>' +
-          '<input type="text" id="color-roads" value="#E1DBD5" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-roads-pick" value="#E1DBD5" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-roads" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-roads-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Walls</label>' +
-          '<input type="text" id="color-walls" value="#4C4C4C" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-walls-pick" value="#4C4C4C" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-walls" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-walls-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Trees</label>' +
-          '<input type="text" id="color-trees" value="#4A7C59" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-trees-pick" value="#4A7C59" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-trees" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-trees-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Labels</label>' +
-          '<input type="text" id="color-labels" value="#662C28" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-labels-pick" value="#662C28" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-labels" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-labels-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           
           '<label style="margin:0;">Elements</label>' +
-          '<input type="text" id="color-elements" value="#D8D8CD" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
-          '<input type="color" id="color-elements-pick" value="#D8D8CD" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
+          '<input type="text" id="color-elements" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
+          '<input type="color" id="color-elements-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           '</div>' +
           '<h3 style="margin-top:16px;">Tinting</h3>' +
           '<label>Method:<br>' +
@@ -358,14 +358,14 @@
           '<option value="brightness">Brightness</option>' +
           '<option value="overlay">Overlay</option>' +
           '</select></label>' +
-          '<label style="margin-top:8px;">Strength: <span id="tint-strength-value">60%</span><br>' +
-          '<input type="range" id="tint-strength" min="0" max="100" step="5" value="60"></label>' +
-          '<label>Weathering: <span id="tint-weathering-value">60%</span><br>' +
-          '<input type="range" id="tint-weathering" min="0" max="100" step="5" value="60"></label>' +
+          '<label style="margin-top:8px;">Strength: <span id="tint-strength-value">90%</span><br>' +
+          '<input type="range" id="tint-strength" min="0" max="100" step="5" value="90"></label>' +
+          '<label>Weathering: <span id="tint-weathering-value">90%</span><br>' +
+          '<input type="range" id="tint-weathering" min="0" max="100" step="5" value="90"></label>' +
           '<div class="checkbox-grid" style="margin-top:12px;">' +
           '<label><input type="checkbox" id="thin-lines-check"> Thin Lines</label>' +
-          '<label><input type="checkbox" id="tint-districts-check"> Tint Districts</label>' +
-          '<label><input type="checkbox" id="weathered-roofs-check"> Weathered Roofs</label>' +
+          '<label><input type="checkbox" id="tint-districts-check" checked> Tint Districts</label>' +
+          '<label><input type="checkbox" id="weathered-roofs-check" checked> Weathered Roofs</label>' +
           '</div>' +
           '<div style="margin-top:12px;"><button id="apply-colors-btn">Apply Colours</button>' +
           '<button id="save-colors-btn">Save</button>' +
@@ -378,6 +378,40 @@
         exportFloat.className = 'export-float';
         exportFloat.innerHTML = '<button id="export-btn-float">Export PNG</button>';
         container.appendChild(exportFloat);
+
+        // ===== COLOR SCHEME SYSTEM =====
+        const colorPresets = {
+          default: {
+            paper: '#F3EDE2', ink: '#2B2416', roofs: '#8B7355', water: '#50DAD3',
+            greens: '#C8D4A8', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#4A7C59',
+            labels: '#662C28', elements: '#D8D8CD'
+          },
+          ink: {
+            paper: '#FFFEF8', ink: '#000000', roofs: '#3F322C', water: '#8F9997',
+            greens: '#8D927B', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#777F66',
+            labels: '#662C28', elements: '#D8D8CD'
+          },
+          bw: {
+            paper: '#FFFFFF', ink: '#000000', roofs: '#666666', water: '#CCCCCC',
+            greens: '#AAAAAA', roads: '#EEEEEE', walls: '#333333', trees: '#888888',
+            labels: '#000000', elements: '#DDDDDD'
+          },
+          vivid: {
+            paper: '#FFF8DC', ink: '#1A0A00', roofs: '#DC143C', water: '#1E90FF',
+            greens: '#32CD32', roads: '#FFD700', walls: '#2F4F4F', trees: '#228B22',
+            labels: '#8B0000', elements: '#FF6347'
+          },
+          natural: {
+            paper: '#F5F5DC', ink: '#3E2723', roofs: '#8D6E63', water: '#4FC3F7',
+            greens: '#9CCC65', roads: '#EFEBE9', walls: '#5D4037', trees: '#66BB6A',
+            labels: '#6D4C41', elements: '#BCAAA4'
+          },
+          modern: {
+            paper: '#ECEFF1', ink: '#263238', roofs: '#607D8B', water: '#00BCD4',
+            greens: '#4CAF50', roads: '#CFD8DC', walls: '#455A64', trees: '#009688',
+            labels: '#37474F', elements: '#B0BEC5'
+          }
+        };
 
         var sizeSlider = document.getElementById('size-slider');
         var sizeValue = document.getElementById('size-value');
@@ -623,6 +657,36 @@
         syncCheckbox('canal-check', StateManager.canal === 1);
         syncCheckbox('coast-check', StateManager.coast === 1);
 
+        // Initialize StateManager from checked checkboxes (rendering options)
+        const tintDistrictsEl = document.getElementById('tint-districts-check');
+        if (tintDistrictsEl) StateManager.tintDistricts = tintDistrictsEl.checked;
+        
+        const weatheredRoofsEl = document.getElementById('weathered-roofs-check');
+        if (weatheredRoofsEl) StateManager.weatheredRoofs = weatheredRoofsEl.checked;
+        
+        const thinLinesEl = document.getElementById('thin-lines-check');
+        if (thinLinesEl) StateManager.thinLines = thinLinesEl.checked;
+        
+        // Initialize StateManager from slider values
+        const tintMethodEl = document.getElementById('tint-method');
+        if (tintMethodEl) StateManager.tintMethod = tintMethodEl.value;
+        
+        const tintStrengthEl = document.getElementById('tint-strength');
+        if (tintStrengthEl) StateManager.tintStrength = parseInt(tintStrengthEl.value);
+        
+        const tintWeatheringEl = document.getElementById('tint-weathering');
+        if (tintWeatheringEl) StateManager.tintWeathering = parseInt(tintWeatheringEl.value);
+        
+        // Initialize StateManager water features from checkboxes
+        const riverEl = document.getElementById('river-check');
+        if (riverEl) StateManager.river = riverEl.checked ? 1 : 0;
+        
+        const canalEl = document.getElementById('canal-check');
+        if (canalEl) StateManager.canal = canalEl.checked ? 1 : 0;
+        
+        const coastEl = document.getElementById('coast-check');
+        if (coastEl) StateManager.coast = coastEl.checked ? 1 : 0;
+
         // Make generator globally accessible for flythrough
         window.generator = generator;
 
@@ -755,39 +819,7 @@
           link.click();
         });
 
-        // ===== COLOR SCHEME SYSTEM =====
-        const colorPresets = {
-          default: {
-            paper: '#F3EDE2', ink: '#2B2416', roofs: '#8B7355', water: '#4A7C59',
-            greens: '#C8D4A8', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#4A7C59',
-            labels: '#662C28', elements: '#D8D8CD'
-          },
-          ink: {
-            paper: '#FFFEF8', ink: '#000000', roofs: '#3F322C', water: '#8F9997',
-            greens: '#8D927B', roads: '#E1DBD5', walls: '#4C4C4C', trees: '#777F66',
-            labels: '#662C28', elements: '#D8D8CD'
-          },
-          bw: {
-            paper: '#FFFFFF', ink: '#000000', roofs: '#666666', water: '#CCCCCC',
-            greens: '#AAAAAA', roads: '#EEEEEE', walls: '#333333', trees: '#888888',
-            labels: '#000000', elements: '#DDDDDD'
-          },
-          vivid: {
-            paper: '#FFF8DC', ink: '#1A0A00', roofs: '#DC143C', water: '#1E90FF',
-            greens: '#32CD32', roads: '#FFD700', walls: '#2F4F4F', trees: '#228B22',
-            labels: '#8B0000', elements: '#FF6347'
-          },
-          natural: {
-            paper: '#F5F5DC', ink: '#3E2723', roofs: '#8D6E63', water: '#4FC3F7',
-            greens: '#9CCC65', roads: '#EFEBE9', walls: '#5D4037', trees: '#66BB6A',
-            labels: '#6D4C41', elements: '#BCAAA4'
-          },
-          modern: {
-            paper: '#ECEFF1', ink: '#263238', roofs: '#607D8B', water: '#00BCD4',
-            greens: '#4CAF50', roads: '#CFD8DC', walls: '#455A64', trees: '#009688',
-            labels: '#37474F', elements: '#B0BEC5'
-          }
-        };
+
 
         // Sync color pickers with text inputs
         const colorFields = ['paper', 'ink', 'roofs', 'water', 'greens', 'roads', 'walls', 'trees', 'labels', 'elements'];
@@ -818,16 +850,38 @@
                 colorPicker.value = preset[key];
               }
             });
+            // Apply the preset colors immediately
+            applyColorScheme();
           }
         });
 
         // Tinting sliders
+        document.getElementById('tint-method').addEventListener('change', function() {
+          StateManager.tintMethod = this.value;
+          if (generator && generator.render) generator.render();
+        });
+        
+        // Use 'change' event for sliders to trigger render when user releases
         document.getElementById('tint-strength').addEventListener('input', function() {
           document.getElementById('tint-strength-value').textContent = this.value + '%';
+          StateManager.tintStrength = parseInt(this.value);
+        });
+        document.getElementById('tint-strength').addEventListener('change', function() {
+          StateManager.tintStrength = parseInt(this.value);
+          console.log('Tint strength changed to:', StateManager.tintStrength);
+          if (generator && generator.render) {
+            console.log('Calling generator.render()');
+            generator.render();
+          }
         });
         
         document.getElementById('tint-weathering').addEventListener('input', function() {
           document.getElementById('tint-weathering-value').textContent = this.value + '%';
+          StateManager.tintWeathering = parseInt(this.value);
+        });
+        document.getElementById('tint-weathering').addEventListener('change', function() {
+          StateManager.tintWeathering = parseInt(this.value);
+          if (generator && generator.render) generator.render();
         });
 
         // Visual options checkboxes
@@ -846,9 +900,19 @@
           generator.render();
         });
 
-        // Apply colors button
-        document.getElementById('apply-colors-btn').addEventListener('click', function() {
-          // Update Palette class with new colors
+        // Initialize UI color inputs with default preset values
+        const defaultPreset = colorPresets.default;
+        Object.keys(defaultPreset).forEach(key => {
+          const textInput = document.getElementById(`color-${key}`);
+          const colorPicker = document.getElementById(`color-${key}-pick`);
+          if (textInput && colorPicker) {
+            textInput.value = defaultPreset[key];
+            colorPicker.value = defaultPreset[key];
+          }
+        });
+
+        // Function to apply color scheme
+        function applyColorScheme() {
           const PaletteClass = window.Palette;
           if (PaletteClass) {
             PaletteClass.paper = document.getElementById('color-paper').value;
@@ -857,8 +921,8 @@
             PaletteClass.water = document.getElementById('color-water').value;
             PaletteClass.park = document.getElementById('color-greens').value;
             PaletteClass.light = document.getElementById('color-roads').value;
-            PaletteClass.wall = document.getElementById('color-walls').value;
             PaletteClass.tree = document.getElementById('color-trees').value;
+            PaletteClass.wallColor = document.getElementById('color-walls').value;
             PaletteClass.labelText = document.getElementById('color-labels').value;
             PaletteClass.insideCell = document.getElementById('color-elements').value;
             
@@ -869,21 +933,18 @@
               StateManager.tintWeathering = parseInt(document.getElementById('tint-weathering').value);
             }
             
-            console.log('Colors applied:', {
-              paper: PaletteClass.paper,
-              ink: PaletteClass.dark,
-              roofs: PaletteClass.roof,
-              water: PaletteClass.water
-            });
-            
             // Force re-render
             if (generator && generator.render) {
               generator.render();
             }
-          } else {
-            console.error('Palette class not found - make sure the page has fully loaded');
           }
-        });
+        }
+        
+        // Apply default color scheme immediately on page load
+        applyColorScheme();
+        
+        // Apply colors button
+        document.getElementById('apply-colors-btn').addEventListener('click', applyColorScheme);
 
         // Save/Load buttons
         document.getElementById('save-colors-btn').addEventListener('click', function() {
