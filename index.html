@@ -241,7 +241,8 @@
         controls.innerHTML = '<button class="controls-toggle" id="toggle-controls">◀</button>' +
           '<div class="tab-nav">' +
           '<button class="tab-button active" data-tab="settings">Settings</button>' +
-          '<button class="tab-button" data-tab="colours">Colours</button>' +
+          '<button class="tab-button" data-tab="colours">Colour</button>' +
+          '<button class="tab-button" data-tab="tint">Tint</button>' +
           '</div>' +
           '<div class="tab-content active" id="tab-settings">' +
           '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
@@ -351,12 +352,16 @@
           '<input type="text" id="color-elements" value="" style="padding:4px;width:100%;font-family:monospace;font-size:0.85rem;">' +
           '<input type="color" id="color-elements-pick" value="#000000" style="width:40px;height:28px;border:1px solid #4a3d2c;cursor:pointer;">' +
           '</div>' +
-          '<h3 style="margin-top:16px;">Tinting</h3>' +
+          '<div style="margin-top:12px;"><button id="apply-colors-btn">Apply Colours</button>' +
+          '<button id="save-colors-btn">Save</button>' +
+          '<button id="load-colors-btn">Load</button></div>' +
+          '</div>' + // End tab-colours
+          '<div class="tab-content" id="tab-tint">' +
           '<label>Method:<br>' +
           '<select id="tint-method" style="width:100%;padding:4px;border-radius:3px;border:1px solid #4a3d2c;background:#fff;margin-top:4px;">' +
           '<option value="spectrum">Spectrum</option>' +
-          '<option value="brightness">Brightness</option>' +
-          '<option value="overlay">Overlay</option>' +
+          '<option value="brightness" selected>Brightness</option>' +
+          '<option value="overlay" >Overlay</option>' +
           '</select></label>' +
           '<label style="margin-top:8px;">Strength: <span id="tint-strength-value">90%</span><br>' +
           '<input type="range" id="tint-strength" min="0" max="100" step="5" value="90"></label>' +
@@ -367,10 +372,7 @@
           '<label><input type="checkbox" id="tint-districts-check" checked> Tint Districts</label>' +
           '<label><input type="checkbox" id="weathered-roofs-check" checked> Weathered Roofs</label>' +
           '</div>' +
-          '<div style="margin-top:12px;"><button id="apply-colors-btn">Apply Colours</button>' +
-          '<button id="save-colors-btn">Save</button>' +
-          '<button id="load-colors-btn">Load</button></div>' +
-          '</div>'; // End tab-colours
+          '</div>'; // End tab-tint
         container.appendChild(controls);
 
         // Add floating export button
