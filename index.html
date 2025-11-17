@@ -435,6 +435,17 @@
         var plazaChance = document.getElementById('plaza-chance');
         var plazaChanceValue = document.getElementById('plaza-chance-value');
 
+        // Initialize StateManager from slider values at startup
+        StateManager.gridChaos = parseFloat(gridChaos.value);
+        StateManager.sizeChaos = parseFloat(sizeChaos.value);
+        StateManager.cellChaos = parseFloat(cellChaos.value);
+        StateManager.alleyWidth = parseFloat(alleyWidth.value);
+        StateManager.streetWidth = parseFloat(streetWidth.value);
+        StateManager.buildingGap = parseFloat(buildingGap.value);
+        StateManager.wallThickness = parseFloat(wallThickness.value);
+        StateManager.plazaChance = parseFloat(plazaChance.value);
+        StateManager.zoom = parseFloat(zoomSlider.value);
+
         seedInput.value = StateManager.seed;
 
         // Update display values on input

@@ -27,10 +27,11 @@ const APPLY_URQUHART_GRAPH = false;  // Apply Urquhart graph filtering to Delaun
                                     // Removes longest edge from each triangle, creating a sparser graph
 
 // Coast/Water Configuration
-const MIN_COAST_RADIUS = 20;         // Minimum radius for coastline water bodies (diameter = 2x this value)
+const MIN_COAST_RADIUS = 200;         // Minimum radius for coastline water bodies (diameter = 2x this value)
                                      // Prevents tiny water blobs from appearing
-const MIN_COAST_DISTANCE_MULTIPLIER = 3.0;  // Minimum distance from city center as multiplier of cityRadius
-                                            // Coast will be placed at least (cityRadius * this value) away
+const MIN_COAST_EDGE_DISTANCE_MULTIPLIER = 0.4;  // Coast edge distance from city center as multiplier of cityRadius
+                                                 // Coast edge will be placed at (cityRadius * this value) away
+                                                 // Water center = edge distance + waterRadius
 const MAX_COAST_RADIUS = 15000;      // Maximum radius for coastline to prevent performance issues
 
 // ============================================================================
@@ -5727,63 +5728,89 @@ class CityModel {
       baseWaterRadius = MIN_COAST_RADIUS;
     }
     
-    // Random rotation for water orientation
+    // STEP 1: Pick random direction from city center where water will be positioned
     // On retries, rotate angle by 45° each time to try different positions (max 8 attempts = 360°)
     const baseAngle = Random.float() * Math.PI * 2;
     const angle = baseAngle + (retryAttempt * Math.PI / 4); // +45° per retry
     const cos_a = Math.cos(angle);
     const sin_a = Math.sin(angle);
 
-    // Push water MUCH further from center on each retry attempt
-    // Start at MIN_COAST_DISTANCE_MULTIPLIER * city radius, then add 2x radius per retry attempt
-    const waterOffsetDist = this.cityRadius * (MIN_COAST_DISTANCE_MULTIPLIER + retryAttempt * 2.0);
-    
-    // Water size stays constant - don't scale with distance (causes wrapping at large distances)
+    // STEP 2: Determine water body size (clamp to reasonable bounds)
     let waterRadius = baseWaterRadius;
-
-    // Clamp to a sane maximum so it doesn't explode to infinity
     if (waterRadius > MAX_COAST_RADIUS) {
       waterRadius = MAX_COAST_RADIUS;
     }
+    // Expected: waterRadius is the radius of the circular water body (e.g., 300 units)
+
+    // STEP 3: Calculate where we want the water's nearest edge to be
+    // On retries, push this target position further away
+    const targetEdgeDistance = (this.cityRadius * MIN_COAST_EDGE_DISTANCE_MULTIPLIER) + (retryAttempt * this.cityRadius * 2.0);
+    // Expected: targetEdgeDistance = distance from (0,0) where we want the nearest water edge (e.g., cityRadius * 0.5)
+    
+    // STEP 4: Calculate target position for nearest edge (in direction 'angle' from origin)
+    const targetEdgePoint = new Point(
+      Math.cos(angle) * targetEdgeDistance,
+      Math.sin(angle) * targetEdgeDistance
+    );
+    // Expected: targetEdgePoint = the position where we want the water's nearest edge to be placed
+    
+    // STEP 5: Find the "nearest edge" point on the water body
+    // This is the point on the water circle in the OPPOSITE direction of 'angle' (pointing back toward origin)
+    // Since we're placing water in direction 'angle', the nearest edge is at -angle direction from water center
+    // Nearest edge offset from water center = -waterRadius in the direction of angle
+    // Expected: When water center is positioned, nearest edge will be waterRadius closer to origin along the angle line
+    
+    // STEP 6: Position water center in WORLD coordinates
+    // Water center must be BEYOND the target edge by waterRadius
+    // So the nearest edge of the water circle is at targetEdgeDistance from origin
+    const waterOffsetDist = targetEdgeDistance + waterRadius;
     const waterCenter = new Point(
       Math.cos(angle) * waterOffsetDist,
       Math.sin(angle) * waterOffsetDist
     );
+    // Expected: waterCenter at (targetEdgeDistance + waterRadius), nearest edge at targetEdgeDistance
     
-    console.log(`Water: cityRadius=${this.cityRadius.toFixed(1)}, baseWaterRadius=${baseWaterRadius.toFixed(1)}, offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x), finalRadius=${waterRadius.toFixed(1)}, retry=${retryAttempt}`);
-    
-    if (retryAttempt > 0) {
-      console.log(`Water placement attempt ${retryAttempt}: offset=${waterOffsetDist.toFixed(1)} (${(waterOffsetDist/this.cityRadius).toFixed(2)}x radius), waterRadius=${waterRadius.toFixed(1)}, angle=${(angle * 180 / Math.PI).toFixed(1)}° (rotated ${(retryAttempt * 45).toFixed(0)}° from base)`);
-    }
+    console.log(`Coast: cityR=${this.cityRadius.toFixed(0)}, waterR=${waterRadius.toFixed(0)}, angle=${(angle * 180 / Math.PI).toFixed(0)}°, edgeDist=${targetEdgeDistance.toFixed(0)}, waterCenter=(${waterCenter.x.toFixed(0)}, ${waterCenter.y.toFixed(0)})`);
     
     // Mark cells as waterbodies based on distance and noise
+    let closestPatch = null;
+    let closestDist = Infinity;
+    
     for (const patch of this.patches) {
       const center = Polygon.centroid(patch.shape);
       
-      // Rotate point
-      const rotated = new Point(
-        center.x * cos_a - center.y * sin_a,
-        center.y * cos_a + center.x * sin_a
-      );
+      // Calculate distance from water center (both in world space)
+      const rawDist = Point.distance(waterCenter, center);
+      let dist = rawDist - waterRadius;
       
-      // Distance from water center
-      let dist = Point.distance(waterCenter, rotated) - waterRadius;
-      
-      // Adjust for elliptical shape (wider on x if rotated.x > waterCenter.x)
-      if (rotated.x > waterCenter.x) {
-        dist = Math.min(dist, Math.abs(rotated.y - waterCenter.y) - waterRadius);
+      if (rawDist < closestDist) {
+        closestDist = rawDist;
+        closestPatch = center;
       }
       
-      // Add noise perturbation for organic edges
-      const noiseScale = (rotated.x + bounds) / (2 * bounds);
-      const noiseValue = noise(noiseScale, (rotated.y + bounds) / (2 * bounds));
-      const noisePerturbation = noiseValue * waterRadius * Math.sqrt(rotated.length() / bounds);
+      // Add noise perturbation for organic edges (±5% of radius for subtle variation)
+      const noiseScale = (center.x + bounds) / (2 * bounds);
+      const noiseValue = noise(noiseScale, (center.y + bounds) / (2 * bounds));
+      const noisePerturbation = (noiseValue - 0.5) * waterRadius * 0.1; // Centered around 0, ±5% of radius
+      
+
       
       // Mark as waterbody if within perturbed distance
       if (dist + noisePerturbation < 0) {
         patch.waterbody = true;
       }
     }
+    
+    const waterPatchCount = this.patches.filter(p => p.waterbody).length;
+    console.log(`Water patches: ${waterPatchCount}/${this.patches.length}, closest patch dist=${closestDist.toFixed(0)}`);
+    
+    // Store debug info for visualization
+    this.waterDebugInfo = {
+      expectedEdgePoint: new Point(Math.cos(angle) * targetEdgeDistance, Math.sin(angle) * targetEdgeDistance),
+      waterCenter: waterCenter,
+      angle: angle,
+      waterRadius: waterRadius
+    };
   }
   
   /**
@@ -8930,7 +8957,7 @@ class CityRenderer {
         ctx.fill();
         
         // Draw castle walls
-        ctx.strokeStyle = Palette.dark;
+        ctx.strokeStyle = Palette.wallColor;
         ctx.lineWidth = (StateManager.wallThickness || 5);
         ctx.stroke();
         
@@ -10265,7 +10292,7 @@ class CityRenderer {
     const wall = ward.citadelWall;
     const wallThickness = ((StateManager.wallThickness || 2) * 1.5) / this.scale;
     
-    ctx.strokeStyle = Palette.dark;
+    ctx.strokeStyle = Palette.wallColor;
     ctx.lineWidth = wallThickness;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -11949,7 +11976,7 @@ class RoadsView {
       }
       
       // Draw fills
-      ctx.strokeStyle = this.palette.paper;
+      ctx.strokeStyle = this.palette.light;
       ctx.lineWidth = width;
       
       for (const road of roads) {
@@ -12057,7 +12084,7 @@ class WallsView {
     }
     
     // Draw city wall segments (now clipped to outside castles)
-    ctx.strokeStyle = this.palette.dark;
+    ctx.strokeStyle = this.palette.wallColor;
     ctx.lineWidth = this.settings.wallThickness || 5;
     ctx.lineCap = 'square';
     ctx.lineJoin = 'miter';
@@ -12071,7 +12098,7 @@ class WallsView {
     }
     
     // Draw citadel walls (reset stroke properties after restore)
-    ctx.strokeStyle = this.palette.dark;
+    ctx.strokeStyle = this.palette.wallColor;
     ctx.lineWidth = this.settings.wallThickness || 5;
     ctx.lineCap = 'square';
     ctx.lineJoin = 'miter';
