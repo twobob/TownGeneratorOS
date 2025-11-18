@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Medieval Fantasy City Generator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+Great+Primer:ital@0;1&family=Rosarivo:ital@0;1&family=Cinzel:wght@400;700&family=Cormorant+Garamond:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
   <style>
     /* ==== COLOR VARIABLES ==== */
     :root {
@@ -213,6 +216,72 @@
       text-transform: uppercase;
       font-size: 0.9rem;
     }
+    .font-preview-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #f5f0e8;
+      border: 2px solid #4a3d2c;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      z-index: 1000;
+      min-width: 400px;
+      max-width: 80vw;
+    }
+    .font-preview-modal.show {
+      display: block;
+    }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 999;
+    }
+    .modal-overlay.show {
+      display: block;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #4a3d2c;
+    }
+    .modal-header h4 {
+      margin: 0;
+      color: #4a3d2c;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .modal-close {
+      background: #4a3d2c;
+      color: #f3ede2;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .modal-close:hover {
+      background: #5d4d38;
+    }
+    .font-preview-sample {
+      padding: 20px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      text-align: center;
+      color: #2b2416;
+    }
   </style>
 </head>
 <body>
@@ -242,7 +311,7 @@
           '<div class="tab-nav">' +
           '<button class="tab-button active" data-tab="settings">Settings</button>' +
           '<button class="tab-button" data-tab="colours">Colour</button>' +
-          '<button class="tab-button" data-tab="tint">Tint</button>' +
+          '<button class="tab-button" data-tab="xtra">XTRA</button>' +
           '</div>' +
           '<div class="tab-content active" id="tab-settings">' +
           '<label>Zoom: <span id="zoom-value">1.0</span><br>' +
@@ -282,8 +351,8 @@
           '<input type="range" id="alley-width" min="0" max="3" step="0.1" value="0.7"></label>' +
           '<label>Street Width: <span id="street-width-value">3.5</span><br>' +
           '<input type="range" id="street-width" min="0.5" max="5" step="0.5" value="3.5"></label>' +
-          '<label>Building Gap: <span id="building-gap-value">0.9</span><br>' +
-          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="0.9"></label>' +
+          '<label>Building Gap: <span id="building-gap-value">1.2</span><br>' +
+          '<input type="range" id="building-gap" min="0" max="2" step="0.1" value="1.2"></label>' +
           '<label>Wall Thickness: <span id="wall-thickness-value">4.0</span><br>' +
           '<input type="range" id="wall-thickness" min="0.5" max="5" step="0.5" value="4.0"></label>' +
           '<label>Piazza Chance: <span id="plaza-chance-value">5%</span><br>' +
@@ -356,7 +425,8 @@
           '<button id="save-colors-btn">Save</button>' +
           '<button id="load-colors-btn">Load</button></div>' +
           '</div>' + // End tab-colours
-          '<div class="tab-content" id="tab-tint">' +
+          '<div class="tab-content" id="tab-xtra">' +
+          '<h3>Tint</h3>' +
           '<label>Method:<br>' +
           '<select id="tint-method" style="width:100%;padding:4px;border-radius:3px;border:1px solid #4a3d2c;background:#fff;margin-top:4px;">' +
           '<option value="spectrum">Spectrum</option>' +
@@ -372,7 +442,49 @@
           '<label><input type="checkbox" id="tint-districts-check" checked> Tint Districts</label>' +
           '<label><input type="checkbox" id="weathered-roofs-check" checked> Weathered Roofs</label>' +
           '</div>' +
-          '</div>'; // End tab-tint
+          '<h3 style="margin-top:20px;">Text</h3>' +
+          '<div style="margin-top:8px;">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<label style="min-width:60px;margin:0;font-size:0.85rem;">Title</label>' +
+          '<div style="position:relative;flex:1;display:flex;align-items:center;gap:4px;">' +
+          '<input type="text" id="title-font" value="IM Fell Great Primer" data-size="72" data-bold="true" data-italic="false" style="padding:4px 45px 4px 4px;width:100%;font-size:0.85rem;font-family:monospace;">' +
+          '<span style="position:absolute;right:40px;font-size:0.75rem;color:#666;pointer-events:none;">72</span>' +
+          '<button id="title-preview-btn" style="padding:4px 8px;font-size:0.75rem;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;flex-shrink:0;">▶</button>' +
+          '</div></div>' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<label style="min-width:60px;margin:0;font-size:0.85rem;">Labels</label>' +
+          '<div style="position:relative;flex:1;display:flex;align-items:center;gap:4px;">' +
+          '<input type="text" id="label-font" value="IM Fell Great Primer" data-size="36" data-bold="true" data-italic="false" style="padding:4px 45px 4px 4px;width:100%;font-size:0.85rem;font-family:monospace;">' +
+          '<span style="position:absolute;right:40px;font-size:0.75rem;color:#666;pointer-events:none;">36</span>' +
+          '<button id="label-preview-btn" style="padding:4px 8px;font-size:0.75rem;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;flex-shrink:0;">▶</button>' +
+          '</div></div>' +
+          '<div style="display:none;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<label style="min-width:60px;margin:0;font-size:0.85rem;">Legend</label>' +
+          '<div style="position:relative;flex:1;display:flex;align-items:center;gap:4px;">' +
+          '<input type="text" id="legend-font" value="IM Fell Great Primer" data-size="28" data-bold="false" data-italic="false" style="padding:4px 45px 4px 4px;width:100%;font-size:0.85rem;font-family:monospace;">' +
+          '<span style="position:absolute;right:40px;font-size:0.75rem;color:#666;pointer-events:none;">28</span>' +
+          '<button id="legend-preview-btn" style="padding:4px 8px;font-size:0.75rem;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;flex-shrink:0;">▶</button>' +
+          '</div></div>' +
+          '<div style="display:none;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<label style="min-width:60px;margin:0;font-size:0.85rem;">Pins</label>' +
+          '<div style="position:relative;flex:1;display:flex;align-items:center;gap:4px;">' +
+          '<input type="text" id="pins-font" value="IM Fell Great Primer" data-size="28" data-bold="false" data-italic="false" style="padding:4px 45px 4px 4px;width:100%;font-size:0.85rem;font-family:monospace;">' +
+          '<span style="position:absolute;right:40px;font-size:0.75rem;color:#666;pointer-events:none;">28</span>' +
+          '<button id="pins-preview-btn" style="padding:4px 8px;font-size:0.75rem;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;flex-shrink:0;">▶</button>' +
+          '</div></div>' +
+          '<div style="display:none;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<label style="min-width:60px;margin:0;font-size:0.85rem;">Elements</label>' +
+          '<div style="position:relative;flex:1;display:flex;align-items:center;gap:4px;">' +
+          '<input type="text" id="elements-font" value="IM Fell Great Primer" data-size="28" data-bold="false" data-italic="false" style="padding:4px 45px 4px 4px;width:100%;font-size:0.85rem;font-family:monospace;">' +
+          '<span style="position:absolute;right:40px;font-size:0.75rem;color:#666;pointer-events:none;">28</span>' +
+          '<button id="elements-preview-btn" style="padding:4px 8px;font-size:0.75rem;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;flex-shrink:0;">▶</button>' +
+          '</div></div>' +
+          '</div>' +
+          '<h3 style="margin-top:20px;">Reroll</h3>' +
+          '<div style="margin-top:8px;">' +
+          '<button id="reroll-city-name-btn" style="width:100%;padding:8px;background:#5d4d38;color:#f3ede2;border:none;cursor:pointer;border-radius:3px;font-size:0.9rem;">New City Name</button>' +
+          '</div>' +
+          '</div>'; // End tab-xtra
         container.appendChild(controls);
 
         // Add floating export button
@@ -380,6 +492,40 @@
         exportFloat.className = 'export-float';
         exportFloat.innerHTML = '<button id="export-btn-float">Export PNG</button>';
         container.appendChild(exportFloat);
+
+        // Add font preview modal
+        var modalOverlay = document.createElement('div');
+        modalOverlay.className = 'modal-overlay';
+        modalOverlay.id = 'font-modal-overlay';
+        container.appendChild(modalOverlay);
+
+        var fontModal = document.createElement('div');
+        fontModal.className = 'font-preview-modal';
+        fontModal.id = 'font-preview-modal';
+        fontModal.innerHTML = '<div class="modal-header">' +
+          '<h4 id="modal-title">Font Preview</h4>' +
+          '<div>' +
+          '<button class="modal-close" id="modal-ok-btn" style="background:#4a3d2c;margin-right:4px;">OK</button>' +
+          '<button class="modal-close" id="modal-cancel-btn">Cancel</button>' +
+          '</div>' +
+          '</div>' +
+          '<div style="margin-bottom:15px;">' +
+          '<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+          '<select id="modal-font-name" style="flex:1;padding:4px;border:1px solid #4a3d2c;border-radius:3px;font-size:0.85rem;">' +
+          '<option value="IM Fell Great Primer">IM Fell Great Primer</option>' +
+          '<option value="Rosarivo">Rosarivo</option>' +
+          '<option value="Cinzel">Cinzel</option>' +
+          '<option value="Cormorant Garamond">Cormorant Garamond</option>' +
+          '</select>' +
+          '<input type="number" id="modal-font-size" min="12" max="120" value="72" style="width:60px;padding:4px;border:1px solid #4a3d2c;border-radius:3px;">' +
+          '</label>' +
+          '<div style="display:flex;gap:12px;">' +
+          '<label><input type="checkbox" id="modal-bold"> Bold</label>' +
+          '<label><input type="checkbox" id="modal-italic"> Italic</label>' +
+          '</div>' +
+          '</div>' +
+          '<div class="font-preview-sample" id="font-preview-sample">Sample Text</div>';
+        container.appendChild(fontModal);
 
         // ===== COLOR SCHEME SYSTEM =====
         const colorPresets = {
@@ -702,6 +848,9 @@
 
         // Make generator globally accessible for flythrough
         window.generator = generator;
+        
+        // Initial generation
+        generator.generate();
 
         // Tab switching
         document.querySelectorAll('.tab-button').forEach(button => {
@@ -781,6 +930,7 @@
         document.getElementById('regenerate-btn').addEventListener('click', function() {
           // Reduced logging: regeneration triggered
           StateManager.seed = -1;
+          StateManager.cityTitle = null; // Clear city title for new random generation
           StateManager.size = parseInt(sizeSlider.value);
           StateManager.plazaNeeded = document.getElementById('plaza-check').checked;
           StateManager.citadelNeeded = document.getElementById('citadel-check').checked;
@@ -998,6 +1148,149 @@
             alert('Color palette loaded!');
           } else {
             alert('No saved palette found');
+          }
+        });
+
+        // ===== TEXT CONTROLS =====
+        const textTypes = ['title', 'label', 'legend', 'pins', 'elements'];
+        
+        // Font preview modal functionality
+        const modal = document.getElementById('font-preview-modal');
+        const overlay = document.getElementById('font-modal-overlay');
+        const modalTitle = document.getElementById('modal-title');
+        const previewSample = document.getElementById('font-preview-sample');
+        const modalFontName = document.getElementById('modal-font-name');
+        const modalFontSize = document.getElementById('modal-font-size');
+        const modalBold = document.getElementById('modal-bold');
+        const modalItalic = document.getElementById('modal-italic');
+        const okBtn = document.getElementById('modal-ok-btn');
+        const cancelBtn = document.getElementById('modal-cancel-btn');
+        
+        let currentEditType = null;
+
+        function updatePreview() {
+          const fontFamily = modalFontName.value || 'IM FELL Great Primer';
+          const fontSize = modalFontSize.value || '72';
+          const isBold = modalBold.checked;
+          const isItalic = modalItalic.checked;
+
+          previewSample.style.fontFamily = fontFamily;
+          previewSample.style.fontSize = fontSize + 'px';
+          previewSample.style.fontWeight = isBold ? 'bold' : 'normal';
+          previewSample.style.fontStyle = isItalic ? 'italic' : 'normal';
+
+          // Apply palette colors if this is the Title preview
+          if (currentEditType === 'title') {
+            const paperColor = document.getElementById('color-paper')?.value || '#F3EDE2';
+            const labelColor = document.getElementById('color-labels')?.value || '#662C28';
+            // Text stroke (outline/border around letters) uses paper color
+            previewSample.style.webkitTextStroke = `6px ${paperColor}`;
+            previewSample.style.textStroke = `6px ${paperColor}`;
+            previewSample.style.webkitTextFillColor = labelColor;
+            previewSample.style.color = labelColor;
+            previewSample.style.paintOrder = 'stroke fill';
+            previewSample.style.backgroundColor = 'white';
+            previewSample.style.borderColor = '#ccc';
+            previewSample.style.borderWidth = '1px';
+            previewSample.style.borderStyle = 'solid';
+          } else {
+            previewSample.style.webkitTextStroke = '';
+            previewSample.style.textStroke = '';
+            previewSample.style.webkitTextFillColor = '';
+            previewSample.style.paintOrder = '';
+            previewSample.style.borderColor = '#ccc';
+            previewSample.style.borderWidth = '1px';
+            previewSample.style.borderStyle = 'solid';
+            previewSample.style.color = '#2b2416';
+            previewSample.style.backgroundColor = 'white';
+          }
+        }
+
+        function showFontPreview(type) {
+          currentEditType = type;
+          const fontInput = document.getElementById(`${type}-font`);
+          if (!fontInput) return;
+
+          const fontFamily = fontInput.value || 'serif';
+          const fontSize = fontInput.getAttribute('data-size') || '72';
+          const isBold = fontInput.getAttribute('data-bold') === 'true';
+          const isItalic = fontInput.getAttribute('data-italic') === 'true';
+
+          modalTitle.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+          modalFontName.value = fontFamily;
+          modalFontSize.value = fontSize;
+          modalBold.checked = isBold;
+          modalItalic.checked = isItalic;
+
+          updatePreview();
+          modal.classList.add('show');
+          overlay.classList.add('show');
+        }
+
+        function saveAndClose() {
+          // Save changes back to the input
+          if (currentEditType) {
+            const fontInput = document.getElementById(`${currentEditType}-font`);
+            if (fontInput) {
+              fontInput.value = modalFontName.value;
+              fontInput.setAttribute('data-size', modalFontSize.value);
+              fontInput.setAttribute('data-bold', modalBold.checked ? 'true' : 'false');
+              fontInput.setAttribute('data-italic', modalItalic.checked ? 'true' : 'false');
+              // Update the size display in the input
+              const sizeDisplay = fontInput.nextElementSibling;
+              if (sizeDisplay && sizeDisplay.tagName === 'SPAN') {
+                sizeDisplay.textContent = modalFontSize.value;
+              }
+              // Trigger map redraw
+              if (window.generator) {
+                window.generator.render();
+              }
+            }
+          }
+          modal.classList.remove('show');
+          overlay.classList.remove('show');
+        }
+
+        function cancelAndClose() {
+          // Close without saving changes
+          modal.classList.remove('show');
+          overlay.classList.remove('show');
+        }
+
+        // Update preview when modal controls change
+        modalFontName.addEventListener('change', updatePreview);
+        modalFontSize.addEventListener('input', updatePreview);
+        modalBold.addEventListener('change', updatePreview);
+        modalItalic.addEventListener('change', updatePreview);
+
+        // Attach preview button listeners
+        textTypes.forEach(type => {
+          const previewBtn = document.getElementById(`${type}-preview-btn`);
+          if (previewBtn) {
+            previewBtn.addEventListener('click', function() {
+              showFontPreview(type);
+            });
+          }
+        });
+
+        // OK button saves and closes, Cancel closes without saving
+        okBtn.addEventListener('click', saveAndClose);
+        cancelBtn.addEventListener('click', cancelAndClose);
+        overlay.addEventListener('click', cancelAndClose);
+        
+        // Reroll city name button
+        document.getElementById('reroll-city-name-btn').addEventListener('click', function() {
+          StateManager.cityTitle = null; // Clear stored name
+          if (window.generator && window.generator.model) {
+            // Generate new name
+            const newName = `The City of ${typeof Namer !== 'undefined' ? Namer.cityName() : 'Unnamed'}`;
+            window.generator.model.cityTitle = newName;
+            StateManager.cityTitle = newName;
+            if (window.generator.renderer && window.generator.renderer.formalMap) {
+              window.generator.renderer.formalMap.cityTitle = newName;
+            }
+            // Redraw to show new name
+            window.generator.render();
           }
         });
       }

@@ -1356,12 +1356,28 @@ class Ward {
     const wallThickness = (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5.0;
     const buildingGap = (StateManager.buildingGap !== undefined) ? StateManager.buildingGap : 1.8;
 
+    const wardLabel = this.getLabel ? this.getLabel() : this.wardType || 'Unknown';
+    if (n < 4) {
+    console.log(`${wardLabel} getAvailable: shape verts=${n}, hasFace=${!!this.patch.face}, hasEdge=${!!(this.patch.face && this.patch.face.edge)}`);
+    }
     // If we have a DCEL face, compute exact per-edge insets from edge types
     if (this.patch.face && this.patch.face.edge) {
       const loop = this.patch.face.loop();
+      if (loop.length < 4) {
+      console.log(`${wardLabel}: DCEL loop length=${loop.length}`);
+      }
+      // For triangular wards, use original shape with NO inset
+      // Edge-based insetting fails geometrically on triangles
+      if (loop.length === 3) {
+        const originalVerts = loop.map(x => x.v);
+        console.log(`${wardLabel}: Triangle ward detected - returning original shape:`, originalVerts.length, 'vertices');
+        return originalVerts;
+      }
+      
       const edgeInsets = new Array(loop.length);
       const vertexRadii = new Array(loop.length).fill(0);
 
+      // For non-triangular wards, use normal inset calculation
       for (let i = 0; i < loop.length; i++) {
         const e = loop[i].e;
         let inset = Math.max(0.6, buildingGap * 0.5);
@@ -1398,15 +1414,37 @@ class Ward {
       if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
         insetShape = this.clipInside(insetShape, this.model.borderShape);
       }
+      
+      // Check if inset produced a degenerate result (collapsed to triangle or very small area)
+      if (insetShape && insetShape.length >= 3) {
+        const insetArea = this.polygonArea(insetShape);
+        const originalVerts = loop.map(x => x.v);
+        const originalArea = this.polygonArea(originalVerts);
+        
+        // If inset collapsed the shape by more than 98%, use original shape instead
+        if (insetArea < originalArea * 0.02 || (insetShape.length === 3 && originalArea > 500)) {
+          return originalVerts;
+        }
+      }
+      
       // NOTE: Water clipping at this stage doesn't work properly with Sutherland-Hodgman
       // Buildings underwater will be filtered out after generation instead
       return insetShape;
     }
 
     // Fallback to legacy heuristic if DCEL is not available
+    
+    // For triangular wards, use original shape with NO inset
+    if (n === 3) {
+      return shape.slice();
+    }
+    
     const vertexRadii = new Array(n).fill(0);
-    const edgeInsets = new Array(n).fill(Math.max(0.6, buildingGap * 0.5));
+    const edgeInsets = new Array(n);
 
+    // For non-triangular wards, use normal inset calculation
+    edgeInsets.fill(Math.max(0.6, buildingGap * 0.5));
+    
     for (let i = 0; i < n; i++) {
       const a = shape[i];
       const b = shape[(i + 1) % n];
@@ -1425,6 +1463,18 @@ class Ward {
     if (Array.isArray(this.model.borderShape) && this.model.borderShape.length >= 3) {
       result = this.clipInside(result, this.model.borderShape);
     }
+    
+    // Check if inset produced a degenerate result (collapsed to triangle or very small area)
+    if (result && result.length >= 3) {
+      const insetArea = this.polygonArea(result);
+      const originalArea = this.polygonArea(shape);
+      
+      // If inset collapsed the shape by more than 98%, use original shape instead
+      if (insetArea < originalArea * 0.02 || (result.length === 3 && originalArea > 500)) {
+        return shape.slice();
+      }
+    }
+    
     // NOTE: Water clipping at this stage doesn't work properly with Sutherland-Hodgman
     // Buildings underwater will be filtered out after generation instead
     return result;
@@ -1673,13 +1723,31 @@ class Ward {
   }
 
   buildGeometry() {
+    const originalShape = this.patch.shape;
+    const originalArea = originalShape ? this.polygonArea(originalShape) : 0;
     const availableShape = this.getAvailable();
+    const wardType = this.constructor.name;
+    const wardLabel = this.getLabel ? this.getLabel() : this.wardType || 'Unknown';
+    const initialVerts = availableShape ? availableShape.length : 0;
     
     if (!availableShape || availableShape.length < 3) {
-      console.warn('Ward.buildGeometry: Invalid availableShape');
+      console.warn(`${wardLabel} (${wardType}): FAIL - Invalid shape after inset (original: ${originalArea.toFixed(1)})`);
       this.geometry = [];
       return;
     }
+    
+    // Check if available area (after insets) is large enough for buildings
+    const availableArea = this.polygonArea(availableShape);
+    
+    // Final check
+    if (availableArea < 5.0) {
+      console.warn(`${wardLabel} (${wardType}): 0 buildings | verts: ${initialVerts}, original: ${originalArea.toFixed(1)}, available: ${availableArea.toFixed(1)} - Too small`);
+      this.geometry = [];
+      return;
+    }
+    
+    // Note: We allow ANY polygon with 3+ vertices here (triangles, quads, etc.)
+    // Vertex count filtering happens later on individual subdivided lots/buildings
     
     // Store the inset shape for rendering ward backgrounds
     this.availableShape = availableShape;
@@ -1770,7 +1838,7 @@ class Ward {
     // Lots mode: small min size for tight tessellation
     // Complex mode: medium size with detailed geometry
     // Normal mode: larger buildings with organic shapes
-    const minSq = lots ? 8 : (complex ? 15 : 25);
+    const minSq = lots ? 64 : (complex ? 58 : 70);
     const gridChaos = this.model.gridChaos !== undefined ? this.model.gridChaos : 0.4;
     const sizeChaos = this.model.sizeChaos !== undefined ? this.model.sizeChaos : 0.6;
     
@@ -1809,7 +1877,8 @@ class Ward {
           const lotsList = [];
           const minArea = minSq / 4;
           for (const lot of lotsPartitioned) {
-            if (lot.length < 4) continue;
+            // Allow 3+ vertices (triangles are valid lots that can be subdivided)
+            if (lot.length < 3) continue;
             
             const area = this.polygonArea(lot);
             if (area < minArea) continue;
@@ -1937,6 +2006,11 @@ class Ward {
       }
       
       this.geometry = roadBuildings.length ? roadBuildings.concat(innerBuildings) : innerBuildings;
+      
+      if (this.geometry.length === 0) {
+        const lotsMode = lots ? 'lots' : (complex ? 'complex' : 'normal');
+        console.warn(`${wardLabel} (${wardType}): 0 buildings | verts: ${initialVerts}, original: ${originalArea.toFixed(1)}, available: ${availableArea.toFixed(1)}, mode: ${lotsMode}`);
+      }
     }
     
     // Filter buildings: check each vertex, push wet ones out of water AWAY from water centre
@@ -2212,8 +2286,8 @@ class Ward {
     for (const poly of partitionedPolys) {
       const area = this.polygonArea(poly);
       
-      // Filter out too-small lots
-      if (poly.length < 4 || area < minSq / 4) {
+      // Filter out too-small lots (allow triangles with 3+ vertices)
+      if (poly.length < 3 || area < minSq / 4) {
         excludedCount++;
         continue;
       }
@@ -3288,7 +3362,7 @@ class Ward {
     const insetRect = this.insetPolygon(rect, inset);
     
     const minSq = 15; // From district.alleys.minSq
-    const cellSizeParam = (minSq / 4) * 1.0;
+    const cellSizeParam = (minSq / 4) * 8.0;
     const building = this.createGridBuilding(insetRect, cellSizeParam);
     
     // Ensure final result has at least 4 vertices
@@ -5223,7 +5297,13 @@ class CityModel {
     this.streets = [];
     this.gates = [];
     this.bridges = [];
-    this.cityTitle = `The City of ${Namer.cityName() || 'Unnamed'}`;
+    // Use existing city title if available, otherwise generate new one
+    if (StateManager.cityTitle) {
+      this.cityTitle = StateManager.cityTitle;
+    } else {
+      this.cityTitle = `The City of ${Namer.cityName() || 'Unnamed'}`;
+      StateManager.cityTitle = this.cityTitle;
+    }
 
     let coastRetry = 0;
     const maxCoastRetry = 20;
@@ -5438,8 +5518,6 @@ class CityModel {
     }
     this.cityRadius = tempRadius;
     
-    console.log(`coastNeeded=${this.coastNeeded}, retryAttempt=${retryAttempt}`);
-    
     // Pass retry attempt to water marking so it can push water further away on retries
     if (this.coastNeeded) {
       this.markWaterCells(retryAttempt);
@@ -5522,12 +5600,16 @@ class CityModel {
       count++;
     }
     
-    // Recalculate city radius from actual inner patches
+    // Recalculate city radius from all withinCity patches (matches reference Model.hx line 356-362)
     this.cityRadius = 0;
-    for (const patch of this.inner) {
-      for (const p of patch.shape) {
-        const d = p.length();
-        if (d > this.cityRadius) this.cityRadius = d;
+    let withinCityCount = 0;
+    for (const patch of this.patches) {
+      if (patch.withinCity) {
+        withinCityCount++;
+        for (const p of patch.shape) {
+          const d = p.length();
+          if (d > this.cityRadius) this.cityRadius = d;
+        }
       }
     }
     
@@ -5770,8 +5852,6 @@ class CityModel {
     );
     // Expected: waterCenter at (targetEdgeDistance + waterRadius), nearest edge at targetEdgeDistance
     
-    console.log(`Coast: cityR=${this.cityRadius.toFixed(0)}, waterR=${waterRadius.toFixed(0)}, angle=${(angle * 180 / Math.PI).toFixed(0)}°, edgeDist=${targetEdgeDistance.toFixed(0)}, waterCenter=(${waterCenter.x.toFixed(0)}, ${waterCenter.y.toFixed(0)})`);
-    
     // Mark cells as waterbodies based on distance and noise
     let closestPatch = null;
     let closestDist = Infinity;
@@ -5802,7 +5882,6 @@ class CityModel {
     }
     
     const waterPatchCount = this.patches.filter(p => p.waterbody).length;
-    console.log(`Water patches: ${waterPatchCount}/${this.patches.length}, closest patch dist=${closestDist.toFixed(0)}`);
     
     // Store debug info for visualization
     this.waterDebugInfo = {
@@ -8661,10 +8740,6 @@ class Palette {
   static dark = '#2B2416';            // Ink color for outlines/walls (matches UI default)
   static roof = '#8B7355';            // Roofs color (matches UI default, gets tinting applied)
   
-  // Terrain colors
-  static terrainBase = 'hsl(85, 30%, 80%)';  // Light greenish base terrain
-  static farmGreen = '#a7ae89ff';            // Light green for farms outside city
-  
   // Water colors
   static water = '#4A7C59';           // Water color (matches UI default)
   static waterDeep = '#3A6B49';       // Deeper water color
@@ -8692,8 +8767,19 @@ class Palette {
   static wallColor = '#4C4C4C';       // Wall color (matches UI default)
   
   // Label/text colors
-  static labelOutline = '#FFFFFF';    // White outline for labels
   static labelText = '#662C28';       // Labels color (matches UI default)
+  
+  // Font settings accessor - reads from UI inputs
+  static getFontSettings(type) {
+    const input = document.getElementById(`${type}-font`);
+    if (!input) return { family: 'IM Fell Great Primer', size: 36, bold: false, italic: false };
+    return {
+      family: input.value || 'IM Fell Great Primer',
+      size: parseInt(input.getAttribute('data-size') || '36'),
+      bold: input.getAttribute('data-bold') === 'true',
+      italic: input.getAttribute('data-italic') === 'true'
+    };
+  }
   
   // District type colors (for labels/highlighting)
   static districtColors = {
@@ -8707,6 +8793,44 @@ class Palette {
     'park': '#90EE90',                // Light green
     'farm': '#9ACD32'                 // Yellow green
   };
+  
+  /**
+   * Generate terrain/farm color as an offset from paper color
+   * @param {number} hueDelta - Hue shift (degrees)
+   * @param {number} satDelta - Saturation adjustment (-100 to 100)
+   * @param {number} lightDelta - Lightness adjustment (-100 to 100)
+   * @returns {string} HSL color string
+   */
+  static getTerrainColor(hueDelta = 30, satDelta = 10, lightDelta = 5) {
+    // Parse paper color to HSL
+    const hex = this.paper.replace('#', '');
+    const r = parseInt(hex.substr(0, 2), 16) / 255;
+    const g = parseInt(hex.substr(2, 2), 16) / 255;
+    const b = parseInt(hex.substr(4, 2), 16) / 255;
+    
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    
+    if (max === min) {
+      h = s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    
+    // Apply deltas
+    h = ((h * 360 + hueDelta) % 360 + 360) % 360;
+    s = Math.max(0, Math.min(100, s * 100 + satDelta));
+    l = Math.max(0, Math.min(100, l * 100 + lightDelta));
+    
+    return `hsl(${h}, ${s}%, ${l}%)`;
+  }
   
   /**
    * Apply tinting effect to a color
@@ -8870,17 +8994,16 @@ class CityRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     
-    // Use light brown terrain colour for background instead of white
-    ctx.fillStyle = 'hsl(85, 30%, 80%)';
+    // Use paper colour for background
+    ctx.fillStyle = Palette.paper;
     ctx.fillRect(0, 0, width, height);
     
-    const margin = 80;
-    const baseScale = Math.min(
-      (width - margin * 2) / (this.model.cityRadius * 2),
-      (height - margin * 2) / (this.model.cityRadius * 2)
-    );
-    
-    const scale = baseScale * (StateManager.zoom || 0.9);
+    const scaleX = width / this.model.cityRadius;
+    const scaleY = height / this.model.cityRadius;
+    const scMin = Math.min(scaleX, scaleY);
+    const scMax = Math.max(scaleX, scaleY);
+    const baseScale = (scMax / scMin > 2 ? scMax / 2 : scMin) * 0.5;
+    const scale = baseScale * (StateManager.zoom || 1.0);
     this.scale = scale;
 
     ctx.save();
@@ -9022,9 +9145,13 @@ class CityRenderer {
       this.labelBBoxes = [];
       
       // Add a large exclusion zone at the top of the world view where title will be
-      // This is a rough approximation - title area in world coordinates
+      // Use actual title font size for exclusion zone height
+      const titleSettings = Palette.getFontSettings('title');
+      const baseSize = 56;
+      const scaleFactor = titleSettings.size / 72;
+      const actualTitleSize = baseSize * scaleFactor;
       const titleWorldTop = (-height / 2 - StateManager.cameraOffsetY) / scale;
-      const titleWorldHeight = 100 / scale; // roughly 100px in screen space
+      const titleWorldHeight = (actualTitleSize + 40) / scale; // Title size + padding in screen space
       this.labelBBoxes.push({
         x: -1000, // wide enough to span any view
         y: titleWorldTop,
@@ -9045,13 +9172,21 @@ class CityRenderer {
       ctx.save();
       const titleY = 20;
       const titleX = width / 2;
-      const fontSize = 56;
       
-      ctx.font = `bold ${fontSize}px "IM Fell English", serif`;
+      // Get font settings from UI and scale from base size of 56px
+      const fontSettings = Palette.getFontSettings('title');
+      const baseSize = 56; // Original default size
+      const userSize = fontSettings.size; // User's chosen size (default 72)
+      const scaleFactor = userSize / 72; // How much user wants to scale from default 72
+      const fontSize = baseSize * scaleFactor; // Apply user's scale preference
+      const fontWeight = fontSettings.bold ? 'bold' : 'normal';
+      const fontStyle = fontSettings.italic ? 'italic' : 'normal';
+      
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px "${fontSettings.family}", serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       
-      ctx.strokeStyle = Palette.labelOutline;
+      ctx.strokeStyle = Palette.paper;
       ctx.lineWidth = 5;
       ctx.lineJoin = 'round';
       ctx.strokeText(title, titleX, titleY);
@@ -9151,9 +9286,38 @@ class CityRenderer {
       
       const n = (PerlinNoise.noise(cx * noiseScale, cy * noiseScale) + 1) * 0.5;
       
-      // RGB blend between light green and light tan
-      const r1 = 210, g1 = 220, b1 = 195;  // Light greenish
-      const r2 = 205, g2 = 205, b2 = 170; // Light tan
+      // Generate terrain colors as offsets from paper color
+      // Color 1: greenish (hue shift +30, slight saturation boost)
+      const color1 = Palette.getTerrainColor(30, 15, 5);
+      // Color 2: warmer/tan (hue shift -10, lower saturation)
+      const color2 = Palette.getTerrainColor(-10, 5, 0);
+      
+      // Parse both colors to RGB for blending
+      const parseHSL = (hslStr) => {
+        const match = hslStr.match(/hsl\((\d+\.?\d*),\s*(\d+\.?\d*)%,\s*(\d+\.?\d*)%\)/);
+        if (!match) return [200, 200, 200];
+        const h = parseFloat(match[1]) / 360;
+        const s = parseFloat(match[2]) / 100;
+        const l = parseFloat(match[3]) / 100;
+        const hue2rgb = (p, q, t) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1/6) return p + (q - p) * 6 * t;
+          if (t < 1/2) return q;
+          if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+          return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        return [
+          Math.floor(hue2rgb(p, q, h + 1/3) * 255),
+          Math.floor(hue2rgb(p, q, h) * 255),
+          Math.floor(hue2rgb(p, q, h - 1/3) * 255)
+        ];
+      };
+      
+      const [r1, g1, b1] = parseHSL(color1);
+      const [r2, g2, b2] = parseHSL(color2);
       const r = Math.floor(r1 + (r2 - r1) * n);
       const g = Math.floor(g1 + (g2 - g1) * n);
       const b = Math.floor(b1 + (b2 - b1) * n);
@@ -9434,18 +9598,16 @@ class CityRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     
-    // Use light brown terrain colour for background instead of white
-    ctx.fillStyle = Palette.terrainBase;
+    // Use paper colour for background
+    ctx.fillStyle = Palette.paper;
     ctx.fillRect(0, 0, width, height);
     
-    const margin = 80;
-    const baseScale = Math.min(
-      (width - margin * 2) / (this.model.cityRadius * 2),
-      (height - margin * 2) / (this.model.cityRadius * 2)
-    );
-    
-  
-    const scale = baseScale * (StateManager.zoom || 0.9);
+    const scaleX = width / this.model.cityRadius;
+    const scaleY = height / this.model.cityRadius;
+    const scMin = Math.min(scaleX, scaleY);
+    const scMax = Math.max(scaleX, scaleY);
+    const baseScale = (scMax / scMin > 2 ? scMax / 2 : scMin) * 0.5;
+    const scale = baseScale * (StateManager.zoom || 1.0);
     
     ctx.save();
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
@@ -9599,9 +9761,13 @@ class CityRenderer {
       this.labelBBoxes = [];
       
       // Add a large exclusion zone at the top of the world view where title will be
-      // This is a rough approximation - title area in world coordinates
+      // Use actual title font size for exclusion zone height
+      const titleSettings = Palette.getFontSettings('title');
+      const baseSize = 56;
+      const scaleFactor = titleSettings.size / 72;
+      const actualTitleSize = baseSize * scaleFactor;
       const titleWorldTop = (-height / 2 - StateManager.cameraOffsetY) / scale;
-      const titleWorldHeight = 100 / scale; // roughly 100px in screen space
+      const titleWorldHeight = (actualTitleSize + 40) / scale; // Title size + padding in screen space
       this.labelBBoxes.push({
         x: -1000, // wide enough to span any view
         y: titleWorldTop,
@@ -9622,13 +9788,21 @@ class CityRenderer {
       ctx.save();
       const titleY = 20;
       const titleX = width / 2;
-      const fontSize = 56;
       
-      ctx.font = `bold ${fontSize}px "IM Fell English", serif`;
+      // Get font settings from UI and scale from base size of 56px
+      const fontSettings = Palette.getFontSettings('title');
+      const baseSize = 56; // Original default size
+      const userSize = fontSettings.size; // User's chosen size (default 72)
+      const scaleFactor = userSize / 72; // How much user wants to scale from default 72
+      const fontSize = baseSize * scaleFactor; // Apply user's scale preference
+      const fontWeight = fontSettings.bold ? 'bold' : 'normal';
+      const fontStyle = fontSettings.italic ? 'italic' : 'normal';
+      
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px "${fontSettings.family}", serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       
-      ctx.strokeStyle = Palette.labelOutline;
+      ctx.strokeStyle = Palette.paper;
       ctx.lineWidth = 5;
       ctx.lineJoin = 'round';
       ctx.strokeText(cityTitle, titleX, titleY);
@@ -10854,19 +11028,28 @@ class CityRenderer {
     cy /= patch.shape.length;
     
     ctx.save();
-    const fontSize = 10 / this.scale; // Bigger font
-    ctx.font = `bold ${fontSize}px sans-serif`;
+    
+    // Get font settings from UI and apply intelligent scaling
+    const fontSettings = Palette.getFontSettings('label');
+    const baseSize = 10; // Original effective size
+    const userSize = fontSettings.size; // User's chosen size (default 36)
+    const scaleFactor = userSize / 36; // How much user wants to scale from default 36
+    const fontSize = (baseSize * scaleFactor) / this.scale; // Apply scale factor then zoom
+    const fontWeight = fontSettings.bold ? 'bold' : 'normal';
+    const fontStyle = fontSettings.italic ? 'italic' : 'normal';
+    
+    ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontSettings.family}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
-    // White border/background
-    ctx.strokeStyle = Palette.labelOutline;
+    // Paper color border/background
+    ctx.strokeStyle = Palette.paper;
     ctx.lineWidth = 4 / this.scale;
     ctx.lineJoin = 'round';
     ctx.strokeText(labelText, cx, cy);
     
-    // Black text
-    ctx.fillStyle = Palette.dark;
+    // Label text color
+    ctx.fillStyle = Palette.labelText;
     ctx.fillText(labelText, cx, cy);
     ctx.restore();
   }
@@ -10984,12 +11167,22 @@ class CityRenderer {
     if (!text || ridge.length < 2) return;
     
     ctx.save();
-    // Adaptive font sizing based on ridge extents
+    // Get font settings from UI
+    const fontSettings = Palette.getFontSettings('label');
+    const userSize = fontSettings.size; // User's chosen size (default 36)
+    const scaleFactor = userSize / 36; // How much user wants to scale from default 36
+    const fontWeight = fontSettings.bold ? 'bold' : 'normal';
+    const fontStyle = fontSettings.italic ? 'italic' : 'normal';
+    
+    // Adaptive font sizing based on ridge extents with user's scale factor
     let minX = Infinity, maxX = -Infinity;
     for (const p of ridge) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }
     const ridgeWidth = maxX - minX;
-    const fontSize = Math.max(20, Math.min(40, ridgeWidth * 0.12)) / this.scale;
-    ctx.font = `bold ${fontSize}px serif`;
+    // Base range is 20-40, then apply user's scale factor
+    const minSize = 20 * scaleFactor;
+    const maxSize = 40 * scaleFactor;
+    const fontSize = Math.max(minSize, Math.min(maxSize, ridgeWidth * 0.12 * scaleFactor)) / this.scale;
+    ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontSettings.family}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -11096,7 +11289,7 @@ class CityRenderer {
       // If no position found without collision, try scaling down
       if (!foundPosition) {
         const scaledFontSize = fontSize * 0.7;
-        ctx.font = `bold ${scaledFontSize}px serif`;
+        ctx.font = `${fontStyle} ${fontWeight} ${scaledFontSize}px ${fontSettings.family}`;
         const scaledTextWidth = ctx.measureText(text).width;
         const scaledPadding = scaledFontSize * 0.25;
         const scaledHalfW = scaledTextWidth / 2 + scaledPadding;
@@ -11129,7 +11322,7 @@ class CityRenderer {
       }
       
       // Draw the label at the found position
-      ctx.strokeStyle = Palette.labelOutline;
+      ctx.strokeStyle = Palette.paper;
       ctx.lineWidth = 5 / this.scale;
       ctx.strokeText(text, foundPosition.pos.x, foundPosition.pos.y);
       ctx.fillStyle = Palette.labelText;
@@ -11172,7 +11365,7 @@ class CityRenderer {
       ctx.save();
       ctx.translate(pos.x, pos.y);
       ctx.rotate(pos.angle);
-      ctx.strokeStyle = Palette.labelOutline;
+      ctx.strokeStyle = Palette.paper;
       ctx.lineWidth = 3.5 / this.scale;
       ctx.lineJoin = 'round';
       ctx.strokeText(char, 0, 0);
@@ -12363,12 +12556,12 @@ class StateManager {
   static urbanCastle = false; // Castle inside the city walls
   static wallsNeeded = true;
   static gatesNeeded = true;
-  static gridChaos = 0.7;
-  static sizeChaos = 0.8;
-  static cellChaos = 1.0;
-  static alleyWidth = 2.4;
+  static gridChaos = 0.1;
+  static sizeChaos = 0.1;
+  static cellChaos = 0.9;
+  static alleyWidth = 0.7;
   static streetWidth = 3.5;
-  static buildingGap = 0.2;
+  static buildingGap = 1.2;
   static showLabels = false;
   static wallThickness = 4.0;
   static showCellOutlines = false;
@@ -12391,6 +12584,9 @@ class StateManager {
   static zoom = 1.0; // Zoom level for 2D rendering
 
   static showRegionNames = true; // Display region/district names over grouped wards
+  
+  // City name
+  static cityTitle = null; // Preserve city name across regenerations
   
   // Color scheme and visual options
   static thinLines = false; // Use thinner line weights for cleaner look
