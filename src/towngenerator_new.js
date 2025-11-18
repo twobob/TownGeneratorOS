@@ -9013,11 +9013,6 @@ class CityRenderer {
     // Terrain + city floor base layers (behind everything)
     this.drawOutsideTerrain(ctx);
     this.drawCityFloor(ctx);
-
-    // Sand: drawn above floor, below everything else
-    if (StateManager.showWater && this.model.waterBodies) {
-      this.drawSand(ctx, this.model.waterBodies);
-    }
     
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
@@ -9063,6 +9058,11 @@ class CityRenderer {
       showFocus: StateManager.showFocus || false,
       showCellOutlines: StateManager.showCellOutlines
     });
+    
+    // Draw sand AFTER patch colors but before water/bridges
+    if (StateManager.showWater && this.model.waterBodies) {
+      this.drawSand(ctx, this.model.waterBodies);
+    }
     
     // DRAW CASTLE BUILDINGS AND WALLS ON TOP OF EVERYTHING
     for (const patch of this.model.patches) {
@@ -12852,7 +12852,15 @@ class TownGenerator {
     const weatheredRoofsEl = document.getElementById('weathered-roofs-check');
     if (weatheredRoofsEl) StateManager.weatheredRoofs = weatheredRoofsEl.checked;
     
-    this.renderer.render();
+    // Wait for fonts to load before first render
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        this.renderer.render();
+      });
+    } else {
+      // Fallback for browsers that don't support FontFaceSet API
+      this.renderer.render();
+    }
     
     
   }
