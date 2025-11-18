@@ -9084,15 +9084,16 @@ class CityRenderer {
         ctx.lineWidth = (StateManager.wallThickness || 5);
         ctx.stroke();
         
-        // Draw castle buildings (keep and towers)
+        ctx.restore();
+        
+        // Draw castle buildings (keep and towers) using drawBuildings for consistent sizing
+        const wardColourTint = this.getWardColourTint(patch.ward);
         if (patch.ward.geometry && patch.ward.geometry.length > 0) {
-          BuildingPainter.paint(ctx, patch.ward.geometry, Palette.roof, Palette.dark, 0.5, this.scale);
+          this.drawBuildings(ctx, patch.ward.geometry, true, wardColourTint, patch.ward.citadelWall);
         }
         if (patch.ward.towers && patch.ward.towers.length > 0) {
-          BuildingPainter.paint(ctx, patch.ward.towers, Palette.roof, Palette.dark, 0.5, this.scale);
+          this.drawBuildings(ctx, patch.ward.towers, true, wardColourTint, patch.ward.citadelWall);
         }
-        
-        ctx.restore();
       }
     }
     
