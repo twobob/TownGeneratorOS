@@ -1280,18 +1280,15 @@
         
         // Reroll city name button
         document.getElementById('reroll-city-name-btn').addEventListener('click', function() {
-          StateManager.cityTitle = null; // Clear stored name
-          if (window.generator && window.generator.model) {
-            // Generate new name
-            const newName = `The City of ${typeof Namer !== 'undefined' ? Namer.cityName() : 'Unnamed'}`;
-            window.generator.model.cityTitle = newName;
-            StateManager.cityTitle = newName;
-            if (window.generator.renderer && window.generator.renderer.formalMap) {
-              window.generator.renderer.formalMap.cityTitle = newName;
-            }
-            // Redraw to show new name
-            window.generator.render();
+          // Generate new name using the proper name generation logic
+          const newName = Namer.settlementTitle(Namer.cityName() || 'Unnamed', StateManager.size);
+          StateManager.cityTitle = newName;
+          window.generator.model.cityTitle = newName;
+          if (window.generator.renderer && window.generator.renderer.formalMap) {
+            window.generator.renderer.formalMap.cityTitle = newName;
           }
+          // Just re-render to show new name, don't regenerate city
+          window.generator.render();
         });
       }
 

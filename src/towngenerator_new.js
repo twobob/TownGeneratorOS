@@ -57,6 +57,10 @@ class Random {
   static chance(probability) {
     return Random.float() < probability;
   }
+
+  static choice(array) {
+    return array[Random.int(0, array.length)];
+  }
 }
 
 class MathUtils {
@@ -1335,6 +1339,9 @@ class LotPartitioner {
     return {x: cx / n, y: cy / n};
   }
 }
+
+
+
 
 class Ward {
   constructor(model, patch, wardType = 'craftsmen') {
@@ -4187,6 +4194,107 @@ class Plaza extends Ward {
   }
 }
 
+class Academic extends Ward {
+  buildGeometry() {
+    // Academic: Large blocks (quads) or separate buildings (campus style)
+    const shrunkBlock = this.shrinkPolygon(this.shape, 3);
+    
+    if (Random.chance(0.6)) {
+      // Quad Style: One large ring like a cloister
+      this.geometry = this.createRing(shrunkBlock);
+    } else {
+      // Campus Style: Multiple distinct buildings in the plot
+      this.geometry = this.createAlleys(shrunkBlock, 15, 0.2, 0.2, false); 
+    }
+  }
+
+  shrinkPolygonImpl(poly, amount) {
+    const center = poly.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= poly.length;
+    center.y /= poly.length;
+    // Slightly less shrinkage than Cathedral to maximize build area
+    const factor = 1 - (amount * 0.04); 
+    return poly.map(p => new Point(
+      center.x + (p.x - center.x) * factor,
+      center.y + (p.y - center.y) * factor
+    ));
+  }
+
+  createRing(block) {
+    const center = block.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= block.length;
+    center.y /= block.length;
+    
+    // Thicker buildings for academic halls
+    const outer = block.map(p => new Point(
+      center.x + (p.x - center.x) * 0.95,
+      center.y + (p.y - center.y) * 0.95
+    ));
+    const inner = block.map(p => new Point(
+      center.x + (p.x - center.x) * 0.55,
+      center.y + (p.y - center.y) * 0.55
+    ));
+    
+    return [outer, inner];
+  }
+
+  getLabel() {
+    return 'University';
+  }
+}
+
+class Civic extends Ward {
+  buildGeometry() {
+    // Civic: Massive, imposing structures. Often a U-shape or single block.
+    const shrunkBlock = this.shrinkPolygon(this.shape, 2);
+    
+    if (Random.chance(0.5)) {
+      // The "Hall" - one solid block (no alleys, just the shape)
+      // We wrap it in an array because geometry usually expects array of shapes
+      this.geometry = [shrunkBlock]; 
+    } else {
+      // The "Forum" - A U-shaped cut if possible, otherwise a ring
+      this.geometry = this.createRing(shrunkBlock);
+      
+      // If we want a U-shape, we'd slice the ring, but for stability 
+      // purely visual styles, a ring works as a "Senate House"
+    }
+  }
+
+  shrinkPolygonImpl(poly, amount) {
+    const center = poly.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= poly.length;
+    center.y /= poly.length;
+    // Very minimal shrinkage, civic buildings dominate the plot
+    const factor = 1 - (amount * 0.02);
+    return poly.map(p => new Point(
+      center.x + (p.x - center.x) * factor,
+      center.y + (p.y - center.y) * factor
+    ));
+  }
+
+  createRing(block) {
+    const center = block.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+    center.x /= block.length;
+    center.y /= block.length;
+    
+    const outer = block.map(p => new Point(
+      center.x + (p.x - center.x) * 0.95,
+      center.y + (p.y - center.y) * 0.95
+    ));
+    const inner = block.map(p => new Point(
+      center.x + (p.x - center.x) * 0.4, // Large internal courtyard/plaza
+      center.y + (p.y - center.y) * 0.4
+    ));
+    
+    return [outer, inner];
+  }
+
+  getLabel() {
+    return 'Civic';
+  }
+}
+
 class Castle extends Ward {
   buildGeometry() {
     // Citadel with defensive walls, towers, and special keep building
@@ -5269,6 +5377,9 @@ class Farm extends Ward {
   }
 }
 
+
+
+
 class CityModel {
   static instance = null;
 
@@ -5301,7 +5412,7 @@ class CityModel {
     if (StateManager.cityTitle) {
       this.cityTitle = StateManager.cityTitle;
     } else {
-      this.cityTitle = `The City of ${Namer.cityName() || 'Unnamed'}`;
+      this.cityTitle = `${Namer.settlementTitle(Namer.cityName() || 'Unnamed', StateManager.size)}`;
       StateManager.cityTitle = this.cityTitle;
     }
 
@@ -7838,12 +7949,12 @@ class CityModel {
 
     // Ward types for inside city walls - no slums allowed inside
     const wardTypes = [
-      'craftsmen', 'craftsmen', 'merchant', 'craftsmen', 'craftsmen', 'cathedral',
+      'craftsmen', 'academic', 'merchant', 'craftsmen', 'craftsmen', 'cathedral',
       'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen', 'craftsmen',
       'craftsmen', 'craftsmen', 'craftsmen', 'administration', 'craftsmen',
       'military', 'craftsmen', 'patriciate', 'patriciate', 'market',
       'merchant', 'craftsmen', 'craftsmen', 'craftsmen', 'military',
-      'craftsmen', 'craftsmen', 'craftsmen', 'military', 'patriciate',
+      'craftsmen', 'civic', 'craftsmen', 'military', 'patriciate',
       'craftsmen', 'park', 'patriciate', 'market', 'merchant'
     ];
     
@@ -7917,7 +8028,7 @@ class CityModel {
       typeIndex++;
       
       // For special ward types that shouldn't overlap water, check and skip if needed
-      if ((wardType === 'market' || wardType === 'merchant' || wardType === 'patriciate' || wardType === 'military' || wardType === 'administration' || wardType === 'cathedral') && overlapsWater(patch)) {
+      if ((wardType === 'market' || wardType === 'merchant' || wardType === 'patriciate' || wardType === 'military' || wardType === 'administration' || wardType === 'cathedral' || wardType === 'academic' || wardType === 'civic') && overlapsWater(patch)) {
         // Track this patch for docks assignment
         waterOverlapPatches.push(patch);
         // Skip this patch and try next - don't increment typeIndex
@@ -7933,6 +8044,10 @@ class CityModel {
         patch.ward = new Park(this, patch);
       } else if (wardType === 'slum') {
         patch.ward = new Slum(this, patch);
+      } else if (wardType === 'academic') {
+        patch.ward = new Academic(this, patch);
+      } else if (wardType === 'civic') {
+        patch.ward = new Civic(this, patch);
       } else {
         // All other types use standard Ward with type label
         patch.ward = new Ward(this, patch, wardType);
@@ -8339,92 +8454,102 @@ class CityModel {
     }
   }
 
-  // Generate named districts by clustering adjacent wards
-  generateDistricts() {
-    this.districts = [];
-    if (!StateManager.showRegionNames) return;
+  // ------------------------------------------------------------------
+// Updated District Generation Logic
+// ------------------------------------------------------------------
 
-    const innerPatches = this.patches.filter(p => p.withinCity && !p.waterbody && p.ward);
-    const outerPatches = this.patches.filter(p => !p.withinCity && !p.waterbody && p.ward);
-    if (innerPatches.length === 0 && outerPatches.length === 0) return;
+// In your main Generator class:
+generateDistricts() {
+  this.districts = [];
+  if (!StateManager.showRegionNames) return;
 
-    const used = new Set();
-    const targetDistricts = Math.max(3, Math.floor(innerPatches.length / 4));
+  const innerPatches = this.patches.filter(p => p.withinCity && !p.waterbody && p.ward);
+  const outerPatches = this.patches.filter(p => !p.withinCity && !p.waterbody && p.ward);
 
-    // Start districts from random seed patches
-    for (let i = 0; i < targetDistricts && used.size < innerPatches.length; i++) {
-      const available = innerPatches.filter(p => !used.has(p));
-      if (available.length === 0) break;
+  if (innerPatches.length === 0 && outerPatches.length === 0) return;
 
-      const seed = available[Random.int(0, available.length)];
-      const district = { patches: [seed], name: DistrictNameGenerator.generate() };
-      used.add(seed);
+  const used = new Set();
+  const targetDistricts = Math.max(3, Math.floor(innerPatches.length / 4));
 
-      // Grow district by adding adjacent patches
-      const maxSize = Math.floor(innerPatches.length / targetDistricts) + Random.int(0, 3);
-      for (let j = 0; j < maxSize - 1; j++) {
-        const candidates = [];
-        for (const p of district.patches) {
-          for (const neighbor of this.patches) {
-            if (!used.has(neighbor) && neighbor.withinCity && !neighbor.waterbody && neighbor.ward) {
-              if (this.areAdjacent(p, neighbor)) {
-                candidates.push(neighbor);
-              }
+  // 1. Inner City Districts (Organic Growth)
+  for (let i = 0; i < targetDistricts && used.size < innerPatches.length; i++) {
+    const available = innerPatches.filter(p => !used.has(p));
+    if (available.length === 0) break;
+
+    const seed = available[Random.int(0, available.length)];
+    
+    // Infer type from the seed ward type if possible, else random
+    let type = 'market';
+    if (seed.ward instanceof Academic) type = 'academic';
+    else if (seed.ward instanceof Civic) type = 'civic';
+    else if (seed.ward instanceof Cathedral) type = 'temple';
+    else if (seed.ward instanceof Castle) type = 'castle';
+    
+    const name = Namer.districtName(type);
+    const district = { patches: [seed], name: name };
+    used.add(seed);
+
+    // Grow district
+    const maxSize = Math.floor(innerPatches.length / targetDistricts) + Random.int(0, 3);
+    for (let j = 0; j < maxSize - 1; j++) {
+      const candidates = [];
+      for (const p of district.patches) {
+        for (const neighbor of this.patches) {
+          if (!used.has(neighbor) && neighbor.withinCity && !neighbor.waterbody && neighbor.ward) {
+            if (this.areAdjacent(p, neighbor)) {
+              candidates.push(neighbor);
             }
           }
         }
-        if (candidates.length === 0) break;
-        const next = candidates[Random.int(0, candidates.length)];
-        district.patches.push(next);
-        used.add(next);
       }
+      if (candidates.length === 0) break;
+      const next = candidates[Random.int(0, candidates.length)];
+      district.patches.push(next);
+      used.add(next);
+    }
 
-      if (district.patches.length >= 2) {
-        this.districts.push(district);
+    if (district.patches.length >= 2) {
+      this.districts.push(district);
+    }
+  }
+
+  // 2. Outer Region Districts (Directional/Quadrant based)
+  if (outerPatches.length > 0) {
+    const center = { x: 0, y: 0 }; // Assuming 0,0 is city center
+    const quadrants = [
+      { patches: [], minAngle: Math.PI/4, maxAngle: 3*Math.PI/4, dir: 'South' },
+      { patches: [], minAngle: -Math.PI/4, maxAngle: Math.PI/4, dir: 'East' },
+      { patches: [], minAngle: -3*Math.PI/4, maxAngle: -Math.PI/4, dir: 'North' },
+      { patches: [], minAngle: 3*Math.PI/4, maxAngle: -3*Math.PI/4, dir: 'West' } // Wrap case
+    ];
+
+    for (const patch of outerPatches) {
+      const c = Polygon.centroid(patch.shape);
+      const angle = Math.atan2(c.y - center.y, c.x - center.x);
+      
+      for (const q of quadrants) {
+        // Check normal range or wrap-around range
+        const match = (q.minAngle < q.maxAngle) 
+          ? (angle >= q.minAngle && angle < q.maxAngle)
+          : (angle >= q.minAngle || angle < q.maxAngle);
+
+        if (match) {
+          q.patches.push(patch);
+          break;
+        }
       }
     }
 
-    // Create simple quadrant-style districts for outer patches (surrounding region)
-    if (outerPatches.length > 0) {
-      const center = new Point(0, 0);
-      const quadrants = [
-        { name: null, patches: [] , minAngle: Math.PI/4, maxAngle: 3*Math.PI/4 },   // north
-        { name: null, patches: [] , minAngle: -Math.PI/4, maxAngle: Math.PI/4 },    // east
-        { name: null, patches: [] , minAngle: -3*Math.PI/4, maxAngle: -Math.PI/4 }, // south
-        { name: null, patches: [] , minAngle: 3*Math.PI/4, maxAngle: -3*Math.PI/4 } // west (wrap)
-      ];
-
-      for (const patch of outerPatches) {
-        const c = Polygon.centroid(patch.shape);
-        const angle = Math.atan2(c.y - center.y, c.x - center.x);
-        for (const q of quadrants) {
-          if (q.minAngle < q.maxAngle) {
-            if (angle >= q.minAngle && angle < q.maxAngle) {
-              q.patches.push(patch);
-              break;
-            }
-          } else {
-            // wrap-around quadrant (West)
-            if (angle >= q.minAngle || angle < q.maxAngle) {
-              q.patches.push(patch);
-              break;
-            }
-          }
-        }
-      }
-
-      for (const q of quadrants) {
-        if (q.patches.length >= 2) {
-          const dir = q === quadrants[0] ? 'South'
-                    : q === quadrants[1] ? 'East'
-                    : q === quadrants[2] ? 'North'
-                    : 'West';
-          const name = Namer.districtName('castle', dir);
-          this.districts.push({ patches: q.patches, name });
-        }
+    for (const q of quadrants) {
+      if (q.patches.length >= 2) {
+        // Randomize the type for the outer districts to add variety
+        const type = Random.choice(['castle', 'market', 'park', 'craft', 'temple']);
+        const name = Namer.districtName(type, q.dir);
+        this.districts.push({ patches: q.patches, name });
       }
     }
   }
+}
 
   areAdjacent(p1, p2) {
     // Check if two patches share vertices
@@ -9010,9 +9135,10 @@ class CityRenderer {
     ctx.translate(width / 2 + StateManager.cameraOffsetX, height / 2 + StateManager.cameraOffsetY);
     ctx.scale(scale, scale);
 
-    // Terrain + city floor base layers (behind everything)
-    this.drawOutsideTerrain(ctx);
-    this.drawCityFloor(ctx);
+    // Base layer: Draw ALL patches with Urquhart terrain variations
+    // This ensures parts of inside patches that stick outside walls show terrain color
+    const allPatches = this.model.patches.filter(p => p.shape && p.shape.length >= 3);
+    this.drawUrquhartTerrain(ctx, allPatches);
     
     // Prepare city data for FormalMap
     const cityData = this.prepareCityData();
@@ -9081,7 +9207,7 @@ class CityRenderer {
         
         // Draw castle walls
         ctx.strokeStyle = Palette.wallColor;
-        ctx.lineWidth = (StateManager.wallThickness || 5);
+        ctx.lineWidth = (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5;
         ctx.stroke();
         
         ctx.restore();
@@ -9259,19 +9385,43 @@ class CityRenderer {
   // Shade ALL outside patches (cells) with green/brown natural variation, plus castle grounds
   drawOutsideTerrain(ctx) {
     if (!this.model || !this.model.patches) return;
-    const noiseScale = 0.05;
     
     // Get outside patches
     const outsidePatches = this.model.patches.filter(p => 
       (!p.withinCity || p.ward instanceof Castle) && p.shape && p.shape.length >= 3
     );
     
-    // Apply Urquhart graph to group adjacent patches by merging along removed edges
-    const patchGroups = this.groupPatchesByUrquhart(outsidePatches);
+    // Only apply terrain color variation if tintDistricts is enabled
+    if (!StateManager.tintDistricts) {
+      // Just fill with paper color
+      ctx.fillStyle = Palette.paper;
+      for (const patch of outsidePatches) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(patch.shape[0].x, patch.shape[0].y);
+        for (let i = 1; i < patch.shape.length; i++) {
+          ctx.lineTo(patch.shape[i].x, patch.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      return;
+    }
     
-    // Draw each group with unified color
+    // Apply Urquhart graph grouping and draw with terrain color variations
+    this.drawUrquhartTerrain(ctx, outsidePatches);
+  }
+  
+  /**
+   * Draw patches with Urquhart-grouped terrain color variations
+   * Used by both Classic and Architecture modes for base terrain layer
+   */
+  drawUrquhartTerrain(ctx, patches) {
+    const patchGroups = this.groupPatchesByUrquhart(patches);
+    const noiseScale = 0.05;
+    
     for (const group of patchGroups) {
-      // Compute centroid of entire group for color
       let cx = 0, cy = 0, count = 0;
       for (const patch of group) {
         for (const p of patch.shape) {
@@ -9286,14 +9436,9 @@ class CityRenderer {
       }
       
       const n = (PerlinNoise.noise(cx * noiseScale, cy * noiseScale) + 1) * 0.5;
-      
-      // Generate terrain colors as offsets from paper color
-      // Color 1: greenish (hue shift +30, slight saturation boost)
       const color1 = Palette.getTerrainColor(30, 15, 5);
-      // Color 2: warmer/tan (hue shift -10, lower saturation)
       const color2 = Palette.getTerrainColor(-10, 5, 0);
       
-      // Parse both colors to RGB for blending
       const parseHSL = (hslStr) => {
         const match = hslStr.match(/hsl\((\d+\.?\d*),\s*(\d+\.?\d*)%,\s*(\d+\.?\d*)%\)/);
         if (!match) return [200, 200, 200];
@@ -9324,7 +9469,6 @@ class CityRenderer {
       const b = Math.floor(b1 + (b2 - b1) * n);
       const fill = `rgb(${r}, ${g}, ${b})`;
       
-      // Draw all patches in group with same color
       ctx.fillStyle = fill;
       for (const patch of group) {
         ctx.save();
@@ -9339,7 +9483,7 @@ class CityRenderer {
       }
     }
   }
-  
+
   groupPatchesByUrquhart(patches) {
     // Group patches, but limit group size to create moderate-sized fields
     const groups = [];
@@ -9630,7 +9774,7 @@ class CityRenderer {
       this.drawSand(ctx, this.model.waterBodies);
     }
     
-    if (this.model.wallsNeeded && this.model.borderShape && this.model.borderShape.length > 0) {
+    if (this.model.wallsNeeded && this.model.borderShape && this.model.borderShape.length > 0 && StateManager.wallThickness > 0) {
       this.drawWall(ctx, this.model.borderShape);
     }
     
@@ -10153,11 +10297,7 @@ class CityRenderer {
       }
       const isEdgeInside = minDist0 < 8; // threshold in map units
       if (isEdgeInside) {
-        // Outside terrain colour using Perlin noise at centroid (beige/tan tones)
-        const n = (PerlinNoise.noise(cx0 * 0.05, cy0 * 0.05) + 1) * 0.5;
-        const h = 85 * (1 - n) + 40 * n;  // Green to beige/tan (no pink)
-        const s = 30 * (1 - n) + 28 * n;  // Lower saturation
-        const l = 80 * (1 - n) + 83 * n;
+        // Paint sections outside the wall with paper color always
         ctx.save();
         ctx.beginPath();
         // Use rounded corners for farms in prepass too
@@ -10176,7 +10316,7 @@ class CityRenderer {
           for (let i = 1; i < shapeToRender.length; i++) ctx.lineTo(shapeToRender[i].x, shapeToRender[i].y);
         }
         ctx.closePath();
-        ctx.fillStyle = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+        ctx.fillStyle = Palette.paper;
         ctx.fill();
         ctx.restore();
       }
@@ -10278,7 +10418,7 @@ class CityRenderer {
     const gates = this.model.gates || [];
     const safeScale = Math.max(1e-3, this.scale || 1);
     const lineScale = StateManager.thinLines ? 0.6 : 1.0;
-    const wallThickness = ((StateManager.wallThickness || 2) / safeScale) * lineScale;
+    const wallThickness = (((StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 2) / safeScale) * lineScale;
 
     ctx.save();
     
@@ -10381,7 +10521,7 @@ class CityRenderer {
 
         // Robust sizing with clamps to avoid 0 or Infinity
         const safeScale = Math.max(1e-3, this.scale || 1);
-        const baseThick = Math.max(0.5, (StateManager.wallThickness || 2));
+        const baseThick = Math.max(0.5, (StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 2);
         const pierLen = Math.max(0.6 / safeScale, (baseThick * 1.2) / safeScale);
         const spacing = Math.max(0.8 / safeScale, pierLen * 1.6);
 
@@ -10465,7 +10605,7 @@ class CityRenderer {
     if (!ward.citadelWall || ward.citadelWall.length < 3) return;
     
     const wall = ward.citadelWall;
-    const wallThickness = ((StateManager.wallThickness || 2) * 1.5) / this.scale;
+    const wallThickness = (((StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 2) * 1.5) / this.scale;
     
     ctx.strokeStyle = Palette.wallColor;
     ctx.lineWidth = wallThickness;
@@ -10659,7 +10799,7 @@ class CityRenderer {
 
   drawGate(ctx, gate) {
     const safeScale = Math.max(1e-3, this.scale || 1);
-    const wallThickness = (StateManager.wallThickness || 5) / safeScale;
+    const wallThickness = ((StateManager.wallThickness !== undefined) ? StateManager.wallThickness : 5) / safeScale;
     const gateWidth = wallThickness * 1.8;
     const gateHeight = wallThickness * 2.6;
     const barCount = 5;
@@ -11762,10 +11902,111 @@ class FarmPainter {
 }
 
 class Namer {
-  static prefixes = ['North', 'South', 'East', 'West', 'Old', 'New', 'Great', 'Little'];
-  static roots = ['haven', 'ford', 'ton', 'bury', 'wick', 'ham', 'port', 'mouth', 'shire', 'field', 'wood', 'bridge'];
-  static suffixes = ['gate', 'wall', 'keep', 'hold', 'watch', 'guard'];
-  
+
+
+  static settlementTitle(name, size) {
+    // Default size to 25 (Standard City) if undefined or invalid
+    const s = typeof size !== 'undefined' ? parseInt(size) : 25;
+
+    // SIZE < 10: Hamlets & Outposts (Tiny)
+    if (s < 10) {
+      return Random.choice([
+        `The Hamlet of ${name}`,
+        `The Outpost of ${name}`,
+        `${name} Settlement`,
+        `The Ruins of ${name}`,
+        `The Camp at ${name}`,
+        `${name} Crossing`,
+        `Little ${name}`,
+        `The ${name} Encampment`
+      ]);
+    }
+    
+    // SIZE 10 - 18: Villages & Towns (Small)
+    if (s < 18) {
+      return Random.choice([
+        `The Village of ${name}`,
+        `${name} Township`,
+        `The Borough of ${name}`,
+        `The Parish of ${name}`,
+        `${name} Commons`,
+        `Lower ${name}`,
+        `Old ${name}`,
+        `Fort ${name}`,
+        `Mount ${name}`
+      ]);
+    }
+
+    // SIZE 18 - 30: Cities & Strongholds (Medium)
+    if (s < 30) {
+      return Random.choice([
+        `The City of ${name}`,
+        `The Town of ${name}`,
+        `Port ${name}`,
+        `Fortress ${name}`,
+        `The Stronghold of ${name}`,
+        `Greater ${name}`,
+        `The Citadel of ${name}`,
+        `${name} City`,
+        `${name} Harbor`
+      ]);
+    }
+
+    // Massive Metropolises (30+)
+    return Random.choice([
+      `The Great City, ${name}`,
+      `The Grand City of ${name}`,
+      `The Sovereign City of ${name}`,
+      `${name} Sprawl`,
+      `The High Capital, ${name}`,
+      `Crown City of ${name}`,
+      `The Imperial Seat of ${name}`,
+      `Sanctum ${name}`,
+      `The Gilded City of ${name}`,
+      `${name} City`,
+      `${name} Keep`,
+      `${name}`,
+      `${name} Grand` ,
+      `The ${name} Imperium`
+    ]);
+  }
+
+static prefixes = [
+    'Old', 'New', 'Great', 'Little', 
+    'Upper', 'Lower', 'Nether', 'Over', 'High', 'Low', 'Inner', 'Outer', 
+    'Far', 'Near', 'Mid', 'Broad', 'Narrow', 'Long', 'Deep', 'Shallow', 
+    'Cold', 'Warm', 'Grim', 'Fair', 'Dark', 'Bright', 'Swift', 'Still', 
+    'Wild', 'Free', 'Black', 'White', 'Red', 'Green', 'Grey', 'Blue', 
+    'Golden', 'Silver', 'Pale', 'Ashen', 'Verdant', 'Iron', 'Stone', 
+    'Salt', 'Copper', 'Bronze', 'Glass', 'Coal', 'Slate', 'Clay', 'Chalk', 
+    'Kings', 'Queens', 'Princes', 'Royal', 'Bishops', 'Saints', 'Monks', 
+    'Knights', 'Crow', 'Wolf'
+  ];
+
+  static roots = [
+    'haven', 'ford', 'ton', 'bury', 'wick', 'ham', 'port', 'mouth', 
+    'shire', 'field', 'wood', 'bridge', 'bourne', 'beck', 'wash', 'well', 
+    'mere', 'pool', 'spring', 'falls', 'eddy', 'sound', 'quay', 'wharf', 
+    'lode', 'crag', 'cliff', 'ridge', 'peak', 'tor', 'fell', 'scar', 
+    'stone', 'rock', 'mount', 'knoll', 'barrow', 'cairn', 'dale', 'vale', 
+    'glen', 'combe', 'den', 'hollow', 'bottom', 'depths', 'flats', 'level', 
+    'lea', 'mead', 'grove', 'holt', 'shaw', 'weald', 'marsh', 'fen', 
+    'moor', 'heath', 'moss', 'orchard', 'chester', 'caster', 'minster', 
+    'abbey', 'grange', 'mill', 'mine', 'forge', 'market', 'stead', 'ster', 
+    'by', 'thorp', 'toft', 'borough', 'burgh', 'spire', 'tower'
+  ];
+
+  static suffixes = [
+    'gate', 'wall', 'keep', 'hold', 'watch', 'guard', 'bastion', 'ward', 
+    'citadel', 'shield', 'helm', 'post', 'garrison', 'pass', 'cross', 
+    'way', 'road', 'lane', 'path', 'step', 'stair', 'landing', 'ferry', 
+    'lock', 'gap', 'breach', 'view', 'look', 'sight', 'end', 'head', 
+    'point', 'tip', 'edge', 'side', 'bank', 'shore', 'coast', 'rim', 
+    'verge', 'brink', 'rest', 'hope', 'wish', 'fall', 'rise', 'wake', 
+    'sleep', 'fast', 'light', 'shade', 'shadow', 'crown', 'throne', 'seat', 
+    'grave', 'pyre', 'vigil'
+  ];
+
   /**
    * Generate a simple medieval city name
    */
@@ -11787,21 +12028,74 @@ class Namer {
    */
   static districtName(type, direction) {
     const types = {
-      'castle': ['Castle', 'Citadel', 'Keep', 'Fortress'],
-      'market': ['Market', 'Bazaar', 'Square', 'Plaza'],
-      'temple': ['Temple', 'Cathedral', 'Church', 'Abbey'],
-      'slum': ['Slums', 'Warrens', 'Alleys', 'Rookery'],
-      'craft': ['Artisan', 'Craft', 'Trade', 'Guild'],
-      'merchant': ['Merchant', 'Trade', 'Commerce', 'Exchange'],
-      'park': ['Gardens', 'Park', 'Green', 'Grove']
+      'castle': [
+        'Castle', 'Citadel', 'Keep', 'Fortress', 'Palace', 'Bastion', 
+        'Stronghold', 'Heights', 'Crown', 'Court', 'Garrison', 'Towers', 
+        'Ward', 'Seat'
+      ],
+      'market': [
+        'Market', 'Bazaar', 'Square', 'Plaza', 'Mart', 'Exchange', 
+        'Rows', 'Commons', 'Fair', 'Cross', 'Stalls', 'Parade', 
+        'Vend', 'Arcade'
+      ],
+      'temple': [
+        'Temple', 'Cathedral', 'Church', 'Abbey', 'Shrine', 'Sanctum', 
+        'Cloister', 'Hallows', 'Spire', 'Synod', 'Rectory', 'Basilica', 
+        'Chapel', 'Priory'
+      ],
+      'slum': [
+        'Slums', 'Warrens', 'Alleys', 'Rookery', 'Dregs', 'Shambles', 
+        'Bottoms', 'Sink', 'Gutters', 'Undercroft', 'Squats', 'Maze', 
+        'Muck', 'Lowtown'
+      ],
+      'craft': [
+        'Artisan', 'Craft', 'Trade', 'Guild', 'Works', 'Foundry', 
+        'Smithy', 'Tanneries', 'Mills', 'Yards', 'Looms', 'Kilns', 
+        'Ironworks', 'Manufactory'
+      ],
+      'merchant': [
+        'Merchant', 'Trade', 'Commerce', 'Exchange', 'Promenade', 'Avenue', 
+        'High', 'Banks', 'Ledger', 'Vaults', 'Gold', 'Coin', 'Bond', 
+        'Financier'
+      ],
+      'park': [
+        'Gardens', 'Park', 'Green', 'Grove', 'Arboretum', 'Glade', 
+        'Commons', 'Walk', 'Lawns', 'Chase', 'Woods', 'Conservatory', 
+        'Botanical', 'Meadow'
+      ],
+      'docks': [
+        'Port', 'Harbor', 'Wharf', 'Quay', 'Docks', 'Marina', 
+        'Landing', 'Pier', 'Waterfront', 'Jetty', 'Shipyards'
+      ],
+      'academic': [
+        'University', 'College', 'Academy', 'Library', 'Scriptorium', 
+        'Campus', 'School', 'Lyceum', 'Study', 'Archives', 'Institute'
+      ],
+      'civic': [
+        'Senate', 'Forum', 'Council', 'Ministry', 'Bureau', 'Hall', 
+        'Administration', 'Courts', 'Chamber', 'Assembly'
+      ]
     };
     
+    // Default to 'District' if type not found, or pick random name from list
     const base = types[type] ? Random.choice(types[type]) : 'District';
     
+    // 50% chance to prepend direction (e.g., "North Market")
     if (direction && Random.chance(0.5)) {
       return `${direction} ${base}`;
     }
-    
+    else if(  Random.chance(0.5)) {
+    return `${Random.choice(this.prefixes)} ${base}`;    
+    }
+    else if(  Random.chance(0.5)) {
+    return `${Random.choice(this.prefixes)} ${base} ${Random.choice(this.suffixes)}`;
+    }
+    else if(  Random.chance(0.5)) {
+    return `${base} ${Random.choice(this.suffixes)}`;
+    }    
+    else if(  Random.chance(0.5)) {
+    return `${Random.choice(this.prefixes)} ${base}`;
+    }
     return base;
   }
   
@@ -11809,11 +12103,6 @@ class Namer {
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
 }
-
-// Add choice method to Random class
-Random.choice = function(array) {
-  return array[Random.int(0, array.length)];
-};
 
 // ============================================================================
 // View Architecture 
@@ -11977,25 +12266,64 @@ class PatchView {
       }
     }
 
-    // Fill the patch: override to terrain tones for outside cells
-    let fillColour = patch.color || this.palette.light;
-    if (!patch.withinCity) {
-      // Farms get light green, others get beige/tan terrain
-      if (patch.type === 'farm') {
-        fillColour = '#a7ae89ff';  // Light green for farms
-      } else {
-        // Compute soft terrain tint based on centroid noise (beige/tan tones)
-        let cx = 0, cy = 0; for (const p of shapeToRender) { cx += p.x; cy += p.y; } cx /= shapeToRender.length; cy /= shapeToRender.length;
-        const n = (PerlinNoise.noise(cx * 0.05, cy * 0.05) + 1) * 0.5;
-        const h = 40 * (1 - n) + 45 * n;  // Beige/tan hue range (40-45 degrees)
-        const s = 25 * (1 - n) + 30 * n;  // Lower saturation for beige
-        const l = 80 * (1 - n) + 85 * n;  // Light tones
-        fillColour = `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
+    // Fill the patch: Don't fill anything - base terrain already painted
+    // Inside patches will show through clip, outside patches already have Urquhart color
+    let fillColour = null;
+    
+    // Only fill inside patches with district colors
+    if (patch.withinCity && patch.ward) {
+      fillColour = patch.color || this.palette.light;
+      // Apply district tinting if enabled
+      if (StateManager.tintDistricts && patch.wardColorTint) {
+        fillColour = BuildingPainter.blendColours(fillColour, patch.wardColorTint, 0.15);
       }
     }
-    // Apply district tinting if enabled
-    if (StateManager.tintDistricts && patch.ward && patch.wardColorTint) {
-      fillColour = BuildingPainter.blendColours(fillColour, patch.wardColorTint, 0.15);
+    
+    // Skip fill if no color set
+    if (!fillColour) {
+      // Restore and return - base terrain layer already visible
+      if (didClip) ctx.restore();
+      ctx.restore();
+      
+      // Still draw buildings if needed
+      if (showBuildings && patch.buildings && patch.buildings.length > 0) {
+        ctx.save();
+        const buildingShapes = patch.buildings.map(b => b.shape);
+        const gap = (this.settings.buildingGap !== undefined) ? this.settings.buildingGap : 1.8;
+        let processedBuildings;
+        if (gap > 0) {
+          processedBuildings = buildingShapes.map(building => {
+            if (!Array.isArray(building) || building.length === 0) return building;
+            const center = building.reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x: 0, y: 0});
+            center.x /= building.length;
+            center.y /= building.length;
+            const shrinkFactor = 1 - (gap * 0.15);
+            return building.map(p => new Point(
+              center.x + (p.x - center.x) * shrinkFactor,
+              center.y + (p.y - center.y) * shrinkFactor
+            ));
+          }).filter(b => Array.isArray(b) && b.length > 0);
+        } else {
+          processedBuildings = buildingShapes.map(building => 
+            building.map(p => new Point(p.x, p.y))
+          );
+        }
+        BuildingPainter.paint(ctx, processedBuildings, this.palette.roof, this.palette.dark, 0.5, 1, patch.wardColorTint);
+        ctx.restore();
+      }
+      
+      // Draw farm furrows if this is a farm
+      if (showFarms && patch.ward instanceof Farm && patch.ward.furrows) {
+        ctx.save();
+        const farmData = {
+          shape: patch.shape,
+          furrows: patch.ward.furrows
+        };
+        this.drawFarmDetails(ctx, farmData);
+        ctx.restore();
+      }
+      
+      return;
     }
     
     // Apply color tinting if configured
@@ -12015,7 +12343,7 @@ class PatchView {
     
     ctx.beginPath();
     // Use rounded corners for farms
-    if (patch.type === 'farm' && shapeToRender.length >= 3) {
+    if (patch.ward instanceof Farm && shapeToRender.length >= 3) {
       const cornerRadius = 12;
       
       // Start at first point
@@ -12069,8 +12397,12 @@ class PatchView {
     }
     
     // Draw farm details if this is a farm
-    if (showFarms && patch.type === 'farm' && patch.furrows) {
-      this.drawFarmDetails(ctx, patch);
+    if (showFarms && patch.ward instanceof Farm) {
+      const farmData = {
+        shape: patch.shape,
+        furrows: patch.ward.furrows || []
+      };
+      this.drawFarmDetails(ctx, farmData);
     }
     
     // Restore after optional clip
@@ -12098,12 +12430,15 @@ class PatchView {
     ctx.lineWidth = 0.3;
     
     for (const furrow of farm.furrows) {
-      // Safety check: ensure furrow has valid start and end points
-      if (!furrow || furrow.length < 2 || !furrow[0] || !furrow[1]) continue;
+      // Handle both array format [start, end] and object format {start, end}
+      const start = furrow.start || furrow[0];
+      const end = furrow.end || furrow[1];
+      
+      if (!start || !end) continue;
       
       ctx.beginPath();
-      ctx.moveTo(furrow[0].x, furrow[0].y);
-      ctx.lineTo(furrow[1].x, furrow[1].y);
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
       ctx.stroke();
     }
     
@@ -12135,8 +12470,10 @@ class RoadsView {
     if (showMinor) {
       this.drawRoadLayer(ctx, this.roads.filter(r => !r.major && !r.isAlley), false, false);
     }
-    // Draw alleys last with minimal visibility
-    this.drawRoadLayer(ctx, this.roads.filter(r => r.isAlley), false, true);
+    // Draw alleys last with minimal visibility (only if showAlleys enabled)
+    if (StateManager.showAlleys) {
+      this.drawRoadLayer(ctx, this.roads.filter(r => r.isAlley), false, true);
+    }
     
     ctx.restore();
   }
@@ -12278,13 +12615,15 @@ class WallsView {
     }
     
     // Draw city wall segments (now clipped to outside castles)
-    ctx.strokeStyle = this.palette.wallColor;
-    ctx.lineWidth = this.settings.wallThickness || 5;
-    ctx.lineCap = 'square';
-    ctx.lineJoin = 'miter';
-    
-    for (const wall of cityWalls) {
-      this.drawWallSegment(ctx, wall);
+    if (this.settings.wallThickness > 0) {
+      ctx.strokeStyle = this.palette.wallColor;
+      ctx.lineWidth = (this.settings.wallThickness !== undefined) ? this.settings.wallThickness : 5;
+      ctx.lineCap = 'square';
+      ctx.lineJoin = 'miter';
+      
+      for (const wall of cityWalls) {
+        this.drawWallSegment(ctx, wall);
+      }
     }
     
     if (citadelWalls.length > 0) {
@@ -12292,13 +12631,15 @@ class WallsView {
     }
     
     // Draw citadel walls (reset stroke properties after restore)
-    ctx.strokeStyle = this.palette.wallColor;
-    ctx.lineWidth = this.settings.wallThickness || 5;
-    ctx.lineCap = 'square';
-    ctx.lineJoin = 'miter';
-    
-    for (const wall of citadelWalls) {
-      this.drawWallSegment(ctx, wall);
+    if (this.settings.wallThickness > 0) {
+      ctx.strokeStyle = this.palette.wallColor;
+      ctx.lineWidth = (this.settings.wallThickness !== undefined) ? this.settings.wallThickness : 5;
+      ctx.lineCap = 'square';
+      ctx.lineJoin = 'miter';
+      
+      for (const wall of citadelWalls) {
+        this.drawWallSegment(ctx, wall);
+      }
     }
     
     // Draw towers
@@ -12334,7 +12675,7 @@ class WallsView {
   drawWallSegment(ctx, wall) {
     if (!wall.path || wall.path.length < 2) return;
     
-    const wallThickness = this.settings.wallThickness || 5;
+    const wallThickness = (this.settings.wallThickness !== undefined) ? this.settings.wallThickness : 5;
     
     ctx.beginPath();
     ctx.moveTo(wall.path[0].x, wall.path[0].y);
@@ -12367,7 +12708,7 @@ class WallsView {
   
   drawTower(ctx, tower) {
     // Compute tower radius dynamically from wall thickness
-    const wallThickness = this.settings.wallThickness || 5;
+    const wallThickness = (this.settings.wallThickness !== undefined) ? this.settings.wallThickness : 5;
     const radius = tower.radius || (wallThickness * 0.8);
     
     if (tower.type === 'square') {
@@ -12387,7 +12728,7 @@ class WallsView {
   
   drawGate(ctx, gate) {
     // Scale gate size with wall thickness
-    const wallThickness = this.settings.wallThickness || 5;
+    const wallThickness = (this.settings.wallThickness !== undefined) ? this.settings.wallThickness : 5;
     const width = gate.width || (wallThickness * 1.8);
     const height = gate.height || (wallThickness * 2.6);
     const barCount = 5;
